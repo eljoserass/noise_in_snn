@@ -26,7 +26,7 @@ class TUMTraf(Dataset):
 
         # TODO check that subset annotations and data match and rgb vs event
         if not isdir(self.img_dir) or not exists(self.img_dir):
-            raise ValueError("invalid imagg_dir")
+            raise ValueError("invalid image_dir")
 
         if not isdir(self.label_dir) or not exists(self.label_dir):
             raise ValueError("invalid label_dir")
