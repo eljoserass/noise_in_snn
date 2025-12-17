@@ -8,14 +8,17 @@
 #   we will write it in a json or in folders idk
 
 
-"""
+#params
+# --data-path <path>- where the root is - has default
+# --out-path <path> - where to write the data output, if it exists something dont rewrite - has default
+# --rewrite - rewrite content ignore if it exists - defaults to false
+# --rgb - do it only on rgb split - defaults to false
+# --eb - do it only on eb_transformed split - defaults to false
+# --split <split,splita,...> - do it only in the specified split - defaults to train/val/test
+# --eb_roi_path - where the json is - defaults to roi_eb_transformed.json
+# --n_frames - number of frames per video -  defaults to 16
 
-i need to find where is the left strip, and generate a json of the packets of frames
-then simply either use that index to return the data propperly on the dataset torch wrapper or pre-compute the transformation, but with the cost of doubling the storage pretty much
-
-is better still because is something that ill do once, and space is cheaper than computation.
-
-option b is better: create preprocessed fodler or something that removes the left strip, shift labels, and packets frames in in groups
-this for train/val/test. group the same for rgb to be fair with how many data and which data we use. then simply train on frames
-
-""" 
+# returns
+# if main
+# will dump a folder with similar structure,
+#  but each grup of frames in a different folder, and eb_transformed with new labels and image dimensions

@@ -3,6 +3,7 @@ about the data:
     https://github.com/tum-traffic-dataset/tum-traffic-dataset-dev-kit/blob/a11c99b5b7f80b5fd1d8a2c9398fd6d21b4c80e2/src/preprocessing/undistort_images.py
     undisort opencv
 - group the frames by seconds or something, pick the frames
+- the strips with empty frames are saved in crop_eb_transformed
 
 
 for rgb:
@@ -14,6 +15,13 @@ for evt:
 - in evaluation: care about video
 - look for coding method (population etc )
 
+
+
+
+
+
+
+------
 
 paths to see where there are no events
 ![alt text](data/TUMTraf_Event_Dataset/val/images/eb_transformed/20231114-082225.660894.jpg)
