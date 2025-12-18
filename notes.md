@@ -1,9 +1,8 @@
 about the data:
-- the left strip is on eb_Transformed==== more on how to solve it here https://www.perplexity.ai/search/what-are-the-calibraations-fol-YgwXHY21RM2AaZJh3euGKw
-    https://github.com/tum-traffic-dataset/tum-traffic-dataset-dev-kit/blob/a11c99b5b7f80b5fd1d8a2c9398fd6d21b4c80e2/src/preprocessing/undistort_images.py
-    undisort opencv
-- group the frames by seconds or something, pick the frames
-- the strips with empty frames are saved in crop_eb_transformed
+- group in a reasonable amount of n_frames and max_diff. note on the 'reasonable'
+    - check later what is a good amount. for now 8-16 frames and 1s (1000ms) seems alright
+- crop with the eb_roi_text in the calibration folders. a little bit of data gets lost compared to mine but is fine for consistency with the paper
+ 
 
 
 for rgb:
@@ -16,27 +15,17 @@ for evt:
 - look for coding method (population etc )
 
 
+----
+
+do i need to apply the roi to the rgb?
+
+TODO:
+    - [] apply eb_roi to preprocessed eb data (images and labels)
+    - [] adapat torch dataset to use the new structure
+    - [] check if i need to transform the format of the eb images
+    - [] create a cli for a option of the pipeline to visualize videos and/or painted frames
 
 
-
-
-
-------
-
-paths to see where there are no events
-![alt text](data/TUMTraf_Event_Dataset/val/images/eb_transformed/20231114-082225.660894.jpg)
-- corner that can be used for left and bottom
-
-
-![alt text](data/TUMTraf_Event_Dataset/val/images/eb_transformed/20231114-082301.647477.jpg)
-- can be used for right side
-
-
-![alt text](data/TUMTraf_Event_Dataset/val/images/eb_transformed/20231114-082434.166224.jpg)
-- good for corners
-
-![alt text](data/TUMTraf_Event_Dataset/val/images/eb_transformed/20231114-083734.164714.jpg)
-- good for left
-
-
-find the tiles of dead pixels, lets say that im adding an extra filtering step on the preprocessing pipeline?   
+TODO Lategame
+    - [] check why roi is wrong. using it but shifting by multiplying by 10 to keep it consistent
+    - [] use fred https://miccunifi.github.io/FRED/ 
