@@ -97,6 +97,7 @@ import time
 def apply_roi(image_path:Path, label_path:Path, roi:dict) -> None:
     """
     Applies the ROI transformation to labels and grouped images
+    Assumes the images used are the eb_transformed ones. RGB roi not implemented
     :param image_path: path to gruped frames
     :param label_path: path to labels
     :param roi: ROI coordinates (x, y, width, height)
@@ -114,11 +115,10 @@ def apply_roi(image_path:Path, label_path:Path, roi:dict) -> None:
         x, y, w, h = roi["x"], roi["y"], roi["width"], roi["height"]
         cropped_img = img[y:h, x:w]
         # overwrite
-        # remove the file before writing
-        if frame_file.exists():
-            frame_file.unlink()
-        status = cv2.imwrite(str(frame_file), cropped_img)
-        print (f"Processed frame file: {str(frame_file)}, write status: {status}")
+        gray_img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
+        status = cv2.imwrite(str(frame_file), gray_img)
+        if not status:
+            print (f"Error writing cropped image {frame_file}")
 
     # process labels
     label_files = sorted(label_path.glob("*/*.json"))
