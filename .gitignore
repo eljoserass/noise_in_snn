@@ -3,3 +3,4 @@ venv
 .venv
 TUMTraf_Event_Dataset*
 preprocessed/
+videos/
