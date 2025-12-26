@@ -11,13 +11,13 @@ class TUMTraf(Dataset):
     def __init__(self, img_dir:Path, label_dir:Path, by_group:bool=False):
         """
         Assumes data is on groups, wont work if doesnt run preprocessed/
+        if data is loaded by group, each item is a set of frames, else every item is a frame
         
-        :param self: Description
-        :param img_dir: Description
+        :param img_dir: Path where preprocessed images are stored
         :type img_dir: Path
-        :param label_dir: Description
+        :param label_dir: Path where preprocessed labels are stored
         :type label_dir: Path
-        :param by_group: Description
+        :param by_group: Whether to load data by group
         :type by_group: bool
         """
         # TODO check when data structure is not the same, or not using preprocessed bc if not it just quietly fails
@@ -47,9 +47,7 @@ class TUMTraf(Dataset):
                     if self.by_group:
                         self.img_labels[group][file_id] = d
                     else:
-                        self.img_labels[i]["group"] = group
-                        self.img_labels[i]["id"] = file_id
-                        self.img_labels[i]["data"] = d
+                        self.img_labels[file_id] = {'group': group, 'data': d}
 
         # go for all all labels and get the classes
         self.classes = set()
