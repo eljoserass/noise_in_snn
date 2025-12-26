@@ -20,15 +20,16 @@ class TUMTraf(Dataset):
         :param by_group: Description
         :type by_group: bool
         """
+        # TODO check when data structure is not the same, or not using preprocessed bc if not it just quietly fails
         self.img_dir = img_dir
         self.label_dir = label_dir
         self.by_group = by_group
 
         if not isdir(self.img_dir) or not exists(self.img_dir):
-            raise ValueError("invalid image_dir")
+            raise ValueError("invalid img_dir", self.img_dir)
 
         if not isdir(self.label_dir) or not exists(self.label_dir):
-            raise ValueError("invalid label_dir")
+            raise ValueError("invalid label_dir", self.label_dir)
         
 
         self.img_labels = defaultdict(dict)
@@ -58,14 +59,14 @@ class TUMTraf(Dataset):
                     for obj in frame.get("openlabel", {}).get("frames", {}).values():
                         for o in obj.get("objects", {}).values():
                             object_data = o.get("object_data", {})
-                            obj_name = object_data.get("name") or o.get("name") or "object"
-                            self.classes.add(obj_name)
+                            obj_type = object_data.get("type") or o.get("type") or "object"
+                            self.classes.add(obj_type)
             else:
                 for obj in item['data'].get("openlabel", {}).get("frames", {}).values():
                     for o in obj.get("objects", {}).values():
                         object_data = o.get("object_data", {})
-                        obj_name = object_data.get("name") or o.get("name") or "object"
-                        self.classes.add(obj_name)
+                        obj_type = object_data.get("type") or o.get("type") or "object"
+                        self.classes.add(obj_type)
         self.classes = sorted(list(self.classes))
     def __len__(self):
         return len(self.img_labels)
