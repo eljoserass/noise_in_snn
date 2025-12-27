@@ -8,6 +8,15 @@ from collections import defaultdict
 
 
 class TUMTraf(Dataset):
+
+    CLASSES = ['BICYCLE', 
+               'BUS', 
+               'CAR', 
+            #   'MOTORCYCLE', 
+               'PEDESTRIAN', 
+               'TRAILER', 
+               'TRUCK']
+
     def __init__(self, img_dir:Path, label_dir:Path, by_group:bool=False):
         """
         Assumes data is on groups, wont work if doesnt run preprocessed/
@@ -24,7 +33,8 @@ class TUMTraf(Dataset):
         self.img_dir = img_dir
         self.label_dir = label_dir
         self.by_group = by_group
-
+        self.classes = self.CLASSES
+    
         if not isdir(self.img_dir) or not exists(self.img_dir):
             raise ValueError("invalid img_dir", self.img_dir)
 
@@ -49,23 +59,6 @@ class TUMTraf(Dataset):
                     else:
                         self.img_labels[file_id] = {'group': group, 'data': d}
 
-        # go for all all labels and get the classes
-        self.classes = set()
-        for item in self.img_labels.values():
-            if self.by_group:
-                for frame in item.values():
-                    for obj in frame.get("openlabel", {}).get("frames", {}).values():
-                        for o in obj.get("objects", {}).values():
-                            object_data = o.get("object_data", {})
-                            obj_type = object_data.get("type") or o.get("type") or "object"
-                            self.classes.add(obj_type)
-            else:
-                for obj in item['data'].get("openlabel", {}).get("frames", {}).values():
-                    for o in obj.get("objects", {}).values():
-                        object_data = o.get("object_data", {})
-                        obj_type = object_data.get("type") or o.get("type") or "object"
-                        self.classes.add(obj_type)
-        self.classes = sorted(list(self.classes))
     def __len__(self):
         return len(self.img_labels)
     

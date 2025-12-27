@@ -4,7 +4,57 @@ about the data:
 - crop with the eb_roi_text in the calibration folders. a little bit of data gets lost compared to mine but is fine for consistency with the paper
 - groupids dont match, group 0003 of rgb mihht not matb group 0003 eb_transformed
 - there are some images that cleary show a car and are not labeled. should i label? https://www.perplexity.ai/search/i-am-seeing-my-datasets-tumtra-c0aN71xFSVy_VsY1Q1YNFg
- 
+- imbalance on classes
+    RGB train classes: ['BICYCLE', 'BUS', 'CAR', 'PEDESTRIAN', 'TRAILER', 'TRUCK']
+    EB train classes: ['BICYCLE', 'BUS', 'CAR', 'MOTORCYCLE', 'PEDESTRIAN', 'TRAILER', 'TRUCK']
+    RGB val classes: ['BUS', 'CAR', 'MOTORCYCLE', 'PEDESTRIAN', 'TRAILER', 'TRUCK']
+    EB val classes: ['BUS', 'CAR', 'PEDESTRIAN', 'TRAILER', 'TRUCK']
+    RGB test day classes: ['BICYCLE', 'BUS', 'CAR', 'MOTORCYCLE', 'PEDESTRIAN', 'TRAILER', 'TRUCK']
+    EB test day classes: ['BICYCLE', 'BUS', 'CAR', 'MOTORCYCLE', 'PEDESTRIAN', 'TRAILER', 'TRUCK']
+    RGB test night_with_light_off classes: ['CAR']
+    EB test night_with_light_off classes: ['CAR']
+    RGB test night_with_light_on classes: ['BUS', 'CAR', 'TRUCK']
+    EB test night_with_light_on classes: ['BUS', 'CAR', 'TRUCK']
+
+    removing the class for consistency
+- not super 1 to 1, eb lacks a lot of annotation
+        Classes: ['BICYCLE', 'BUS', 'CAR', 'MOTORCYCLE', 'PEDESTRIAN', 'TRAILER', 'TRUCK']
+        Total Samples: 2360
+        Empty Samples (after filtering): 0 (0.00%)
+        Class Distribution:
+        CAR: 8104
+        TRUCK: 706
+        PEDESTRIAN: 694
+        TRAILER: 640
+        BUS: 337
+        BICYCLE: 17
+        MOTORCYCLE: 2
+
+        Classes: ['BICYCLE', 'BUS', 'CAR', 'MOTORCYCLE', 'PEDESTRIAN', 'TRAILER', 'TRUCK']
+        Total Samples: 2358
+        Empty Samples (after filtering): 0 (0.00%)
+        Class Distribution:
+        CAR: 17499
+        TRUCK: 2052
+        PEDESTRIAN: 1237
+        TRAILER: 1004
+        BUS: 414
+        BICYCLE: 47
+    there is too few matching groups, proceeding as is for now
+    Total Objects RGB Train: 22253
+Total Objects EB Train: 10498
+Ratio: 0.47
+
+Perfect Matches: 0 groups
+Close Matches (<10% diff): 6 groups
+Mismatches: 289 groups
+
+Top 5 Mismatches (Group, RGB Train, EB Train):
+  ('0084', 126, 20)
+  ('0170', 115, 12)
+  ('0085', 118, 16)
+  ('0082', 118, 19)
+  ('0083', 118, 20)
 
 
 for rgb:

@@ -3,5 +3,5 @@ torchvision
 matplotlib
 snntorch
 opencv-python
-
+tqdm
 norse
