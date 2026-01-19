@@ -5,3 +5,4 @@ snntorch
 opencv-python
 tqdm
 norse
+pytest

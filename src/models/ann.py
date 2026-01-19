@@ -1,264 +1,150 @@
 """
-SSD (Single Shot MultiBox Detector) using VGG-9 backbone from scratch.
+SSD (Single Shot MultiBox Detector) using VGG-11 backbone from scratch.
 Designed for object detection on TUMTraf Event Dataset.
-ANN (Artificial Neural Network) version.
+ANN (Artificial Neural Network) version for RGB images.
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from typing import Tuple
 
-from ..utils.anchors import generate_anchors, get_num_anchors_per_cell, DEFAULT_ANCHOR_CONFIG
 
-
-class VGG9Backbone(nn.Module):
+class VGG11_SSD_ANN(nn.Module):
     """
-    VGG-9 backbone for feature extraction.
-    Architecture: 2 conv blocks with 2 layers each, then 2 blocks with 1 layer, ending with FC layers
-    Modified to output multi-scale feature maps for SSD.
-    """
-    
-    def __init__(self, in_channels: int = 3):
-        super(VGG9Backbone, self).__init__()
-        
-        # Block 1: 2 conv layers, output: 64 channels
-        self.conv1_1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
-        self.bn1_1 = nn.BatchNorm2d(64)
-        self.conv1_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.bn1_2 = nn.BatchNorm2d(64)
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        # Block 2: 2 conv layers, output: 128 channels
-        self.conv2_1 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.bn2_1 = nn.BatchNorm2d(128)
-        self.conv2_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
-        self.bn2_2 = nn.BatchNorm2d(128)
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        # Block 3: 2 conv layers, output: 256 channels
-        self.conv3_1 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        self.bn3_1 = nn.BatchNorm2d(256)
-        self.conv3_2 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
-        self.bn3_2 = nn.BatchNorm2d(256)
-        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        # Block 4: 2 conv layers, output: 512 channels (Feature map 1 for SSD)
-        self.conv4_1 = nn.Conv2d(256, 512, kernel_size=3, padding=1)
-        self.bn4_1 = nn.BatchNorm2d(512)
-        self.conv4_2 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
-        self.bn4_2 = nn.BatchNorm2d(512)
-        self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        # Block 5: Additional conv for more features (Feature map 2 for SSD)
-        self.conv5_1 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
-        self.bn5_1 = nn.BatchNorm2d(512)
-        self.conv5_2 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
-        self.bn5_2 = nn.BatchNorm2d(512)
-        self.pool5 = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        self._init_weights()
-        
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-    
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, ...]:
-        # Block 1
-        x = F.relu(self.bn1_1(self.conv1_1(x)))
-        x = F.relu(self.bn1_2(self.conv1_2(x)))
-        x = self.pool1(x)
-        
-        # Block 2
-        x = F.relu(self.bn2_1(self.conv2_1(x)))
-        x = F.relu(self.bn2_2(self.conv2_2(x)))
-        x = self.pool2(x)
-        
-        # Block 3
-        x = F.relu(self.bn3_1(self.conv3_1(x)))
-        x = F.relu(self.bn3_2(self.conv3_2(x)))
-        x = self.pool3(x)
-        
-        # Block 4 - Feature map 1 (before pooling for higher resolution)
-        x = F.relu(self.bn4_1(self.conv4_1(x)))
-        x = F.relu(self.bn4_2(self.conv4_2(x)))
-        feat1 = x  # 40x30 for 640x480 input
-        x = self.pool4(x)
-        
-        # Block 5 - Feature map 2
-        x = F.relu(self.bn5_1(self.conv5_1(x)))
-        x = F.relu(self.bn5_2(self.conv5_2(x)))
-        feat2 = x  # 20x15 for 640x480 input
-        x = self.pool5(x)
-        
-        feat3 = x  # 10x7 for 640x480 input
-        
-        return feat1, feat2, feat3
-
-
-class SSDExtraLayers(nn.Module):
-    """
-    Additional convolutional layers for SSD to generate more feature maps at different scales.
-    """
-    
-    def __init__(self):
-        super(SSDExtraLayers, self).__init__()
-        
-        # Extra layer 1: 512 -> 256
-        self.conv6_1 = nn.Conv2d(512, 256, kernel_size=1)
-        self.conv6_2 = nn.Conv2d(256, 512, kernel_size=3, stride=2, padding=1)
-        
-        # Extra layer 2: 512 -> 128
-        self.conv7_1 = nn.Conv2d(512, 128, kernel_size=1)
-        self.conv7_2 = nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1)
-        
-        # Extra layer 3: 256 -> 128
-        self.conv8_1 = nn.Conv2d(256, 128, kernel_size=1)
-        self.conv8_2 = nn.Conv2d(128, 256, kernel_size=3)
-        
-        self._init_weights()
-        
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-    
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, ...]:
-        # Extra layer 1
-        x = F.relu(self.conv6_1(x))
-        feat4 = F.relu(self.conv6_2(x))
-        
-        # Extra layer 2
-        x = F.relu(self.conv7_1(feat4))
-        feat5 = F.relu(self.conv7_2(x))
-        
-        # Extra layer 3
-        x = F.relu(self.conv8_1(feat5))
-        feat6 = F.relu(self.conv8_2(x))
-        
-        return feat4, feat5, feat6
-
-
-class PredictionHead(nn.Module):
-    """
-    Prediction head for SSD that outputs class scores and bounding box offsets.
-    """
-    
-    def __init__(self, in_channels: int, num_anchors: int, num_classes: int):
-        super(PredictionHead, self).__init__()
-        self.num_classes = num_classes
-        self.num_anchors = num_anchors
-        
-        # Classification head
-        self.cls_conv = nn.Conv2d(in_channels, num_anchors * num_classes, kernel_size=3, padding=1)
-        
-        # Localization head (4 values: dx, dy, dw, dh)
-        self.loc_conv = nn.Conv2d(in_channels, num_anchors * 4, kernel_size=3, padding=1)
-        
-        self._init_weights()
-        
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-    
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch_size = x.size(0)
-        
-        # Class predictions: (batch, num_anchors * num_classes, H, W) -> (batch, H*W*num_anchors, num_classes)
-        cls_pred = self.cls_conv(x)
-        cls_pred = cls_pred.permute(0, 2, 3, 1).contiguous()
-        cls_pred = cls_pred.view(batch_size, -1, self.num_classes)
-        
-        # Location predictions: (batch, num_anchors * 4, H, W) -> (batch, H*W*num_anchors, 4)
-        loc_pred = self.loc_conv(x)
-        loc_pred = loc_pred.permute(0, 2, 3, 1).contiguous()
-        loc_pred = loc_pred.view(batch_size, -1, 4)
-        
-        return cls_pred, loc_pred
-
-
-class SSD_VGG9(nn.Module):
-    """
-    SSD (Single Shot MultiBox Detector) with VGG-9 backbone.
+    VGG11 backbone with SSD heads for object detection on RGB images.
+    Multi-scale feature maps are used for detection at different resolutions.
     
     Args:
         num_classes: Number of object classes (excluding background)
-        input_size: Tuple of (height, width) for input images
-        in_channels: Number of input channels (3 for RGB)
     """
     
-    def __init__(self, num_classes: int, input_size: Tuple[int, int] = (480, 640), in_channels: int = 3):
-        super(SSD_VGG9, self).__init__()
+    def __init__(self, num_classes: int = 21):
+        super().__init__()
+        self.num_classes = num_classes
         
-        self.num_classes = num_classes + 1  # Add background class
-        self.input_size = input_size
+        # VGG11 Backbone
+        # Block 1: 1 conv layer
+        self.block1 = nn.Sequential(
+            nn.Conv2d(3, 64, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2)
+        )
         
-        # Backbone
-        self.backbone = VGG9Backbone(in_channels=in_channels)
+        # Block 2: 1 conv layer
+        self.block2 = nn.Sequential(
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2)
+        )
         
-        # Extra layers
-        self.extras = SSDExtraLayers()
+        # Block 3: 2 conv layers
+        self.block3 = nn.Sequential(
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2)
+        )  # Feature map 1: [B, 256, 38, 38]
         
-        # Feature map channels
-        feat_channels = [512, 512, 512, 512, 256, 256]
+        # Block 4: 2 conv layers
+        self.block4 = nn.Sequential(
+            nn.Conv2d(256, 512, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2)
+        )  # Feature map 2: [B, 512, 19, 19]
         
-        # Calculate number of anchors per feature map (using shared utility)
-        self.num_anchors = get_num_anchors_per_cell()
+        # Block 5: 2 conv layers
+        self.block5 = nn.Sequential(
+            nn.Conv2d(512, 512, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2)
+        )  # Feature map 3: [B, 512, 10, 10]
         
-        # Prediction heads for each feature map
-        self.pred_heads = nn.ModuleList([
-            PredictionHead(feat_channels[i], self.num_anchors[i], self.num_classes)
-            for i in range(6)
+        # Additional SSD layers for more feature maps
+        self.extra1 = nn.Sequential(
+            nn.Conv2d(512, 1024, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(1024, 1024, 1),
+            nn.ReLU(inplace=True)
+        )  # Feature map 4: [B, 1024, 10, 10]
+        
+        self.extra2 = nn.Sequential(
+            nn.Conv2d(1024, 256, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 512, 3, stride=2, padding=1),
+            nn.ReLU(inplace=True)
+        )  # Feature map 5: [B, 512, 5, 5]
+        
+        # Number of anchors per feature map
+        self.num_anchors = [4, 6, 6, 6, 4]
+        
+        # Classification heads for each feature map
+        self.classifiers = nn.ModuleList([
+            nn.Conv2d(256, self.num_anchors[0] * num_classes, 3, padding=1),
+            nn.Conv2d(512, self.num_anchors[1] * num_classes, 3, padding=1),
+            nn.Conv2d(512, self.num_anchors[2] * num_classes, 3, padding=1),
+            nn.Conv2d(1024, self.num_anchors[3] * num_classes, 3, padding=1),
+            nn.Conv2d(512, self.num_anchors[4] * num_classes, 3, padding=1),
         ])
         
-        # Generate default anchor boxes (using shared utility)
-        self.anchors = generate_anchors()
+        # Regression heads for each feature map (4 = dx, dy, dw, dh)
+        self.regressors = nn.ModuleList([
+            nn.Conv2d(256, self.num_anchors[0] * 4, 3, padding=1),
+            nn.Conv2d(512, self.num_anchors[1] * 4, 3, padding=1),
+            nn.Conv2d(512, self.num_anchors[2] * 4, 3, padding=1),
+            nn.Conv2d(1024, self.num_anchors[3] * 4, 3, padding=1),
+            nn.Conv2d(512, self.num_anchors[4] * 4, 3, padding=1),
+        ])
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass.
         
         Args:
-            x: Input tensor of shape (batch, channels, height, width)
+            x: Input tensor of shape (batch, 3, height, width)
             
         Returns:
-            cls_preds: Class predictions (batch, num_anchors, num_classes)
-            loc_preds: Location predictions (batch, num_anchors, 4)
+            classifications: Class predictions (batch, num_anchors, num_classes)
+            regressions: Location predictions (batch, num_anchors, 4)
         """
-        # Get backbone features
-        feat1, feat2, feat3 = self.backbone(x)
+        # x: [B, 3, 300, 300] - single RGB frame
         
-        # Get extra features
-        feat4, feat5, feat6 = self.extras(feat3)
+        # Backbone
+        x = self.block1(x)  # [B, 64, 150, 150]
+        x = self.block2(x)  # [B, 128, 75, 75]
         
-        features = [feat1, feat2, feat3, feat4, feat5, feat6]
+        feat1 = self.block3(x)  # [B, 256, 38, 38]
+        feat2 = self.block4(feat1)  # [B, 512, 19, 19]
+        feat3 = self.block5(feat2)  # [B, 512, 10, 10]
+        feat4 = self.extra1(feat3)  # [B, 1024, 10, 10]
+        feat5 = self.extra2(feat4)  # [B, 512, 5, 5]
         
-        # Get predictions from each feature map
-        cls_preds = []
-        loc_preds = []
+        features = [feat1, feat2, feat3, feat4, feat5]
         
-        for feat, head in zip(features, self.pred_heads):
-            cls_pred, loc_pred = head(feat)
-            cls_preds.append(cls_pred)
-            loc_preds.append(loc_pred)
+        # Detection heads
+        classifications = []
+        regressions = []
         
-        # Concatenate predictions from all feature maps
-        cls_preds = torch.cat(cls_preds, dim=1)
-        loc_preds = torch.cat(loc_preds, dim=1)
+        for feat, clf, reg in zip(features, self.classifiers, self.regressors):
+            # Classification: [B, num_anchors*num_classes, H, W]
+            cls = clf(feat)
+            B, _, H, W = cls.shape
+            cls = cls.permute(0, 2, 3, 1).contiguous()
+            cls = cls.view(B, -1, self.num_classes)
+            classifications.append(cls)
+            
+            # Regression: [B, num_anchors*4, H, W]
+            reg_out = reg(feat)
+            reg_out = reg_out.permute(0, 2, 3, 1).contiguous()
+            reg_out = reg_out.view(B, -1, 4)
+            regressions.append(reg_out)
         
-        return cls_preds, loc_preds
-    
-    def get_anchors(self, device: torch.device) -> torch.Tensor:
-        """Get anchor boxes on the specified device."""
-        return self.anchors.to(device)
+        # Concatenate all predictions
+        classifications = torch.cat(classifications, dim=1)  # [B, total_anchors, num_classes]
+        regressions = torch.cat(regressions, dim=1)  # [B, total_anchors, 4]
+        
+        return classifications, regressions
