@@ -40,6 +40,12 @@ from src.utils import (
     compute_iou
 )
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate VGG11-SSD models on TUMTraf test sets")
@@ -80,6 +86,14 @@ def parse_args():
                         help="Directory to save evaluation results")
     parser.add_argument("--measure-energy", action="store_true",
                         help="Measure energy consumption (FLOPs/spikes)")
+    
+    # Weights & Biases
+    parser.add_argument("--wandb", action="store_true",
+                        help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="neuromorph-vs-noise",
+                        help="W&B project name")
+    parser.add_argument("--wandb-run-name", type=str, default=None,
+                        help="W&B run name (default: eval_{model_type}_{test_split})")
     
     return parser.parse_args()
 
@@ -661,6 +675,22 @@ def main():
     device = torch.device(args.device)
     print(f"Using device: {device}")
     
+    # Initialize W&B if requested
+    if args.wandb:
+        if not WANDB_AVAILABLE:
+            print("Warning: wandb not installed. Install with: pip install wandb")
+            print("Continuing without W&B logging...")
+            args.wandb = False
+        else:
+            run_name = args.wandb_run_name or f"eval_{args.model_type}_{args.test_split.replace('/', '_')}"
+            wandb.init(
+                project=args.wandb_project,
+                name=run_name,
+                config=vars(args),
+                tags=[args.model_type, args.test_split, "evaluation"]
+            )
+            print(f"✓ W&B logging enabled: {wandb.run.url}")
+    
     # Generate anchors
     anchors = generate_anchors().to(device)
     print(f"Generated {anchors.size(0)} default anchors")
@@ -760,6 +790,56 @@ def main():
         json.dump(results_serializable, f, indent=2)
     
     print(f"\n✓ Results saved to: {output_file}")
+    
+    # Log to W&B
+    if args.wandb:
+        # Log summary metrics
+        wandb.log({
+            "eval/mAP_avg": results['mAP_avg'],
+            **{f"eval/mAP@{t}": results[f'mAP@{t}'] for t in args.iou_thresholds},
+            "eval/num_images": results['num_images'],
+            "eval/num_predictions": results['num_predictions'],
+            "eval/num_ground_truths": results['num_ground_truths']
+        })
+        
+        # Log per-class metrics
+        for iou_thresh in args.iou_thresholds:
+            per_class = results[f'per_class_AP@{iou_thresh}']
+            for class_name, metrics in per_class.items():
+                wandb.log({
+                    f"eval/{class_name}/AP@{iou_thresh}": metrics['ap'],
+                    f"eval/{class_name}/num_gt": metrics['num_gt'],
+                    f"eval/{class_name}/num_pred": metrics['num_pred'],
+                    f"eval/{class_name}/tp": metrics.get('tp', 0),
+                    f"eval/{class_name}/fp": metrics.get('fp', 0)
+                })
+        
+        # Log latency if available
+        if 'latency' in results:
+            wandb.log({
+                "eval/latency_mean_ms": results['latency']['mean_ms'],
+                "eval/latency_std_ms": results['latency']['std_ms'],
+                "eval/fps": results['latency']['fps']
+            })
+        
+        # Log energy if available
+        if 'energy' in results:
+            if 'flops_per_image' in results['energy']:
+                wandb.log({"eval/flops_per_image": results['energy']['flops_per_image']})
+            if 'spikes_per_image' in results['energy']:
+                wandb.log({"eval/spikes_per_image": results['energy']['spikes_per_image']})
+        
+        # Upload results JSON as artifact
+        artifact = wandb.Artifact(
+            name=f"eval_results_{args.model_type}_{args.test_split.replace('/', '_')}",
+            type="evaluation",
+            description=f"Evaluation results for {args.model_type} on {args.test_split}"
+        )
+        artifact.add_file(output_file)
+        wandb.log_artifact(artifact)
+        
+        wandb.finish()
+        print("✓ Results logged to W&B")
 
 
 if __name__ == "__main__":
