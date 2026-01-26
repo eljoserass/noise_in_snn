@@ -70,6 +70,7 @@ case $STAGE in
         ;;
     eval)
         echo "Running evaluation..."
+        # Note: Requires --model-path and --model-type arguments
         python scripts/evaluate.py "$@"
         ;;
     pipeline)
@@ -99,10 +100,25 @@ case $STAGE in
         
         # Evaluate
         echo "Step 3/3: Evaluating..."
-        python scripts/evaluate.py "$@"
-        if [ $? -ne 0 ]; then
-            echo "Evaluation failed!"
-            exit 1
+        # Determine model path from training output (assumes checkpoint saved to checkpoints/)
+        if [[ "$*" == *"--eb"* ]]; then
+            MODEL_TYPE="snn"
+            CHECKPOINT="checkpoints/vgg11_ssd_snn_best.pth"
+        else
+            MODEL_TYPE="ann"
+            CHECKPOINT="checkpoints/vgg11_ssd_ann_best.pth"
+        fi
+        
+        if [ ! -f "$CHECKPOINT" ]; then
+            echo "Warning: Checkpoint not found at $CHECKPOINT"
+            echo "Skipping evaluation. Run evaluation manually with:"
+            echo "  python scripts/evaluate.py --model-path <path> --model-type $MODEL_TYPE"
+        else
+            python scripts/evaluate.py --model-path "$CHECKPOINT" --model-type "$MODEL_TYPE" "$@"
+            if [ $? -ne 0 ]; then
+                echo "Evaluation failed!"
+                exit 1
+            fi
         fi
         
         echo "Pipeline completed successfully!"
@@ -156,23 +172,38 @@ case $STAGE in
             
             # Evaluate both in parallel
             echo "Step 3/3: Evaluating both models in parallel..."
-            python scripts/evaluate.py --rgb $FILTERED_ARGS &
-            PID_EVAL_ANN=$!
-            python scripts/evaluate.py --eb $FILTERED_ARGS &
-            PID_EVAL_SNN=$!
-            
-            wait $PID_EVAL_ANN
-            EXIT_EVAL_ANN=$?
-            wait $PID_EVAL_SNN
-            EXIT_EVAL_SNN=$?
-            
-            if [ $EXIT_EVAL_ANN -ne 0 ]; then
-                echo "ANN evaluation failed!"
-                exit 1
+            if [ -f "checkpoints/vgg11_ssd_ann_best.pth" ]; then
+                python scripts/evaluate.py --model-path "checkpoints/vgg11_ssd_ann_best.pth" --model-type ann $FILTERED_ARGS &
+                PID_EVAL_ANN=$!
+            else
+                echo "Warning: ANN checkpoint not found, skipping ANN evaluation"
+                PID_EVAL_ANN=0
             fi
-            if [ $EXIT_EVAL_SNN -ne 0 ]; then
-                echo "SNN evaluation failed!"
-                exit 1
+            
+            if [ -f "checkpoints/vgg11_ssd_snn_best.pth" ]; then
+                python scripts/evaluate.py --model-path "checkpoints/vgg11_ssd_snn_best.pth" --model-type snn $FILTERED_ARGS &
+                PID_EVAL_SNN=$!
+            else
+                echo "Warning: SNN checkpoint not found, skipping SNN evaluation"
+                PID_EVAL_SNN=0
+            fi
+            
+            if [ $PID_EVAL_ANN -ne 0 ]; then
+                wait $PID_EVAL_ANN
+                EXIT_EVAL_ANN=$?
+                if [ $EXIT_EVAL_ANN -ne 0 ]; then
+                    echo "ANN evaluation failed!"
+                    exit 1
+                fi
+            fi
+            
+            if [ $PID_EVAL_SNN -ne 0 ]; then
+                wait $PID_EVAL_SNN
+                EXIT_EVAL_SNN=$?
+                if [ $EXIT_EVAL_SNN -ne 0 ]; then
+                    echo "SNN evaluation failed!"
+                    exit 1
+                fi
             fi
             
             echo "Both pipelines completed successfully!"
@@ -196,10 +227,14 @@ case $STAGE in
             fi
             
             echo "Step 3/6: Evaluating ANN (RGB)..."
-            python scripts/evaluate.py --rgb $FILTERED_ARGS
-            if [ $? -ne 0 ]; then
-                echo "ANN evaluation failed!"
-                exit 1
+            if [ -f "checkpoints/vgg11_ssd_ann_best.pth" ]; then
+                python scripts/evaluate.py --model-path "checkpoints/vgg11_ssd_ann_best.pth" --model-type ann $FILTERED_ARGS
+                if [ $? -ne 0 ]; then
+                    echo "ANN evaluation failed!"
+                    exit 1
+                fi
+            else
+                echo "Warning: ANN checkpoint not found, skipping evaluation"
             fi
             
             # EB Pipeline
@@ -211,10 +246,14 @@ case $STAGE in
             fi
             
             echo "Step 5/6: Evaluating SNN (EB)..."
-            python scripts/evaluate.py --eb $FILTERED_ARGS
-            if [ $? -ne 0 ]; then
-                echo "SNN evaluation failed!"
-                exit 1
+            if [ -f "checkpoints/vgg11_ssd_snn_best.pth" ]; then
+                python scripts/evaluate.py --model-path "checkpoints/vgg11_ssd_snn_best.pth" --model-type snn $FILTERED_ARGS
+                if [ $? -ne 0 ]; then
+                    echo "SNN evaluation failed!"
+                    exit 1
+                fi
+            else
+                echo "Warning: SNN checkpoint not found, skipping evaluation"
             fi
             
             echo "Both pipelines completed successfully!"

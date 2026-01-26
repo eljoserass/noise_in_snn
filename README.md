@@ -191,19 +191,143 @@ $$L = L_{cls} + \alpha L_{loc}$$
 
 ## Evaluation
 
-The evaluation pipeline computes standard object detection metrics:
+The evaluation pipeline implements comprehensive object detection metrics with **grouped evaluation** for fair ANN vs SNN comparison:
 
-- **mAP** (mean Average Precision) at IoU thresholds [0.5, 0.75, 0.5:0.95]
-- **Per-class AP** for each of 6 object categories
-- **Inference latency** (frames per second)
-- **Test conditions**: day, night_with_light_off, night_with_light_on
+### Metrics Computed
 
+- **mAP** (mean Average Precision) at configurable IoU thresholds
+  - Default: [0.5, 0.75]
+  - Supports COCO-style mAP@[0.5:0.95:0.05]
+- **Per-class AP** for each of 6 object categories with TP/FP counts
+- **Inference Latency**: mean/std, frames per second
+- **Energy Consumption** (framework available): FLOPs (ANN), spike counts (SNN)
+
+### Grouped Evaluation Strategy
+
+To ensure fair comparison between stateless ANN and temporal SNN:
+
+- **ANN**: Processes each frame independently within 8-frame groups
+- **SNN**: Processes 8-frame sequences with temporal membrane state integration
+- **Both**: Evaluated on identical frames from the same sequences
+- **mAP**: Computed across all individual frames from all groups
+
+This approach ensures both models see the same visual data while respecting their different processing paradigms.
+
+### Usage Examples
+
+**Evaluate ANN on day test set:**
 ```bash
 python scripts/evaluate.py \
     --model-path checkpoints/vgg11_ssd_ann_best.pth \
-    --test-split day \
+    --model-type ann \
+    --test-split test/day \
+    --conf-threshold 0.5 \
+    --nms-threshold 0.5 \
+    --iou-thresholds 0.5 0.75 \
     --device cuda
 ```
+
+**Evaluate SNN on night test set:**
+```bash
+python scripts/evaluate.py \
+    --model-path checkpoints/vgg11_ssd_snn_best.pth \
+    --model-type snn \
+    --test-split test/night_with_light_on \
+    --beta 0.9 \
+    --threshold 1.0 \
+    --surrogate-slope 25.0 \
+    --conf-threshold 0.5 \
+    --nms-threshold 0.5 \
+    --iou-thresholds 0.5 0.75 \
+    --device cuda
+```
+
+**Batch evaluation (all test splits):**
+```bash
+# Using the orchestration script
+./run.sh eval-all --model-path checkpoints/best.pth --model-type ann
+```
+
+### Evaluation Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--model-path` | Required | Path to model checkpoint (.pth) |
+| `--model-type` | Required | Model type: `ann` or `snn` |
+| `--test-split` | `test/day` | Test split: `test/day`, `test/night_with_light_off`, `test/night_with_light_on` |
+| `--conf-threshold` | 0.5 | Confidence threshold for detections |
+| `--nms-threshold` | 0.5 | NMS IoU threshold |
+| `--iou-thresholds` | [0.5, 0.75] | IoU thresholds for mAP computation |
+| `--batch-size` | 1 | Batch size (recommend 1 for fair comparison) |
+| `--output-dir` | `results/` | Directory to save evaluation JSON |
+| `--measure-energy` | False | Enable energy consumption measurement |
+
+### Output Format
+
+**Console Output:**
+```
+==============================================================
+EVALUATION RESULTS - ANN
+==============================================================
+
+Dataset: test/day
+Model: checkpoints/vgg11_ssd_ann_best.pth
+
+Images evaluated: 2358
+Total predictions: 15240
+Total ground truths: 18456
+
+===================mAP Results===================
+mAP (average): 0.4523
+mAP@0.5: 0.5234
+mAP@0.75: 0.3812
+
+================Per-Class AP================
+
+At IoU=0.5:
+  BICYCLE     : AP=0.3421  (GT=1234, Pred=1456, TP= 845, FP= 611)
+  BUS         : AP=0.5678  (GT= 234, Pred= 267, TP= 189, FP=  78)
+  CAR         : AP=0.6234  (GT=8945, Pred=9123, TP=5678, FP=3445)
+  ...
+
+================Latency================
+Mean: 12.34 ms
+Std:  1.23 ms
+FPS:  81.03
+==============================================================
+
+✓ Results saved to: results/eval_ann_test_day.json
+```
+
+**JSON Output** (`results/eval_ann_test_day.json`):
+```json
+{
+  "mAP_avg": 0.4523,
+  "mAP@0.5": 0.5234,
+  "mAP@0.75": 0.3812,
+  "per_class_AP@0.5": {
+    "BICYCLE": {"ap": 0.3421, "num_gt": 1234, "num_pred": 1456, "tp": 845, "fp": 611},
+    ...
+  },
+  "latency": {
+    "mean_ms": 12.34,
+    "std_ms": 1.23,
+    "fps": 81.03
+  },
+  "num_images": 2358,
+  "num_predictions": 15240,
+  "num_ground_truths": 18456,
+  "config": {...}
+}
+```
+
+### Energy Consumption (Future Implementation)
+
+Framework available for energy estimation:
+
+- **ANN**: FLOPs counting via `ptflops` or `fvcore` libraries
+- **SNN**: Spike operation counting with hooks in LIF neurons
+- **Comparison**: Energy efficiency ratio (SNN spikes / ANN FLOPs)
 
 ## Testing
 
@@ -258,10 +382,13 @@ Expected comparative analysis:
 - Fixed 8-frame sequence length for SNN processing
 - Simplified 2-channel event representation (polarity approximation)
 - Single-GPU training (multi-GPU support planned)
+- Dependant of the preprocessing of the dataset, processed directly in frames not event format. Temporal resolution is very low, which could hinder SNN advantages
+- Labels on the dataset are not evenly distributed per classes accross both modalities
 
 ## Future Work
 
-- [ ] Implement evaluation
+- [x] Implement evaluation with grouped comparison strategy
+- [ ] Implement energy consumption measurement (FLOPs/spikes)
 - [ ] Implement noise generation pipeline (mainly black-box input perturbation simulating deployment conditions)
 - [ ] Adapt to include other object detection rgb-eb dataset
 - [ ] Adapt to use other architectures, loses and training algorithms
