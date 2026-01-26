@@ -23,13 +23,14 @@ show_usage() {
     echo "  pipeline         - Run full pipeline (preprocess -> train -> eval)"
     echo "                     Use --rgb or --eb to specify data type"
     echo "  pipeline-both    - Run both RGB and EB pipelines"
-    echo "                     Use --parallel to run them in parallel"
+    echo "                     Use --parallel to run them in parallel (requires 2 GPUs for optimal performance)"
     echo ""
     echo "Examples:"
     echo "  ./run.sh preprocess --all --rewrite"
     echo "  ./run.sh train-ann --epochs 50 --lr 0.001"
     echo "  ./run.sh pipeline --rgb"
-    echo "  ./run.sh pipeline-both --parallel"
+    echo "  ./run.sh pipeline-both                    # Sequential (1 GPU needed)"
+    echo "  ./run.sh pipeline-both --parallel         # Parallel (2 GPUs optimal"
     echo ""
 }
 
@@ -53,6 +54,18 @@ fi
 
 STAGE=$1
 shift  # Remove first argument (stage) so remaining args can be passed to scripts
+
+# Detect available GPUs
+detect_gpus() {
+    if command -v nvidia-smi &> /dev/null; then
+        NUM_GPUS=$(nvidia-smi --list-gpus 2>/dev/null | wc -l)
+        echo $NUM_GPUS
+    else
+        echo 0
+    fi
+}
+
+NUM_GPUS=$(detect_gpus)
 
 # Route to appropriate script based on stage
 case $STAGE in
@@ -140,6 +153,30 @@ case $STAGE in
         if [ "$PARALLEL" = true ]; then
             echo "Running pipelines in PARALLEL mode..."
             
+            # Check GPU availability
+            if [ $NUM_GPUS -eq 0 ]; then
+                echo "ERROR: No CUDA GPUs detected. Cannot run parallel training."
+                echo "Please check nvidia-smi or run in sequential mode."
+                exit 1
+            elif [ $NUM_GPUS -eq 1 ]; then
+                echo "WARNING: Only 1 GPU detected. Parallel mode will run both models on the same GPU."
+                echo "This is typically SLOWER than sequential mode due to resource contention."
+                echo "Recommendation: Use sequential mode (remove --parallel flag) for better performance."
+                read -p "Continue anyway? [y/N] " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    echo "Aborted. Run without --parallel for sequential mode."
+                    exit 0
+                fi
+                GPU_ANN=0
+                GPU_SNN=0
+                echo "Proceeding with both models on GPU 0..."
+            else
+                echo "✓ Detected $NUM_GPUS GPUs. Assigning GPU 0 → ANN, GPU 1 → SNN"
+                GPU_ANN=0
+                GPU_SNN=1
+            fi
+            
             # Preprocess both (must be sequential as it's the same script)
             echo "Step 1/3: Preprocessing both RGB and EB..."
             python scripts/preprocess.py --all $FILTERED_ARGS
@@ -148,11 +185,11 @@ case $STAGE in
                 exit 1
             fi
             
-            # Train both in parallel
-            echo "Step 2/3: Training ANN and SNN in parallel..."
-            python scripts/train_ann_rgb.py --rgb $FILTERED_ARGS &
+            # Train both in parallel with GPU assignment
+            echo "Step 2/3: Training ANN (GPU $GPU_ANN) and SNN (GPU $GPU_SNN) in parallel..."
+            CUDA_VISIBLE_DEVICES=$GPU_ANN python scripts/train_ann_rgb.py --rgb $FILTERED_ARGS &
             PID_ANN=$!
-            python scripts/train_snn_eb.py --eb $FILTERED_ARGS &
+            CUDA_VISIBLE_DEVICES=$GPU_SNN python scripts/train_snn_eb.py --eb $FILTERED_ARGS &
             PID_SNN=$!
             
             # Wait for both to complete
@@ -170,10 +207,10 @@ case $STAGE in
                 exit 1
             fi
             
-            # Evaluate both in parallel
+            # Evaluate both in parallel with GPU assignment
             echo "Step 3/3: Evaluating both models in parallel..."
             if [ -f "checkpoints/vgg11_ssd_ann_best.pth" ]; then
-                python scripts/evaluate.py --model-path "checkpoints/vgg11_ssd_ann_best.pth" --model-type ann $FILTERED_ARGS &
+                CUDA_VISIBLE_DEVICES=$GPU_ANN python scripts/evaluate.py --model-path "checkpoints/vgg11_ssd_ann_best.pth" --model-type ann $FILTERED_ARGS &
                 PID_EVAL_ANN=$!
             else
                 echo "Warning: ANN checkpoint not found, skipping ANN evaluation"
@@ -181,7 +218,7 @@ case $STAGE in
             fi
             
             if [ -f "checkpoints/vgg11_ssd_snn_best.pth" ]; then
-                python scripts/evaluate.py --model-path "checkpoints/vgg11_ssd_snn_best.pth" --model-type snn $FILTERED_ARGS &
+                CUDA_VISIBLE_DEVICES=$GPU_SNN python scripts/evaluate.py --model-path "checkpoints/vgg11_ssd_snn_best.pth" --model-type snn $FILTERED_ARGS &
                 PID_EVAL_SNN=$!
             else
                 echo "Warning: SNN checkpoint not found, skipping SNN evaluation"
