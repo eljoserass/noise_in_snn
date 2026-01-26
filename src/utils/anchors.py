@@ -10,18 +10,23 @@ from typing import List, Tuple
 
 # Default anchor configurations per feature map
 # (aspect_ratios, scales)
+# For TUMTraf dataset: cars (wide), pedestrians (tall), trucks/buses (large)
 DEFAULT_ANCHOR_CONFIG = [
-    ([1, 2, 0.5], 0.1),           # feat1: 40x30
-    ([1, 2, 0.5, 3, 1/3], 0.2),   # feat2: 20x15
-    ([1, 2, 0.5, 3, 1/3], 0.35),  # feat3: 10x7
-    ([1, 2, 0.5, 3, 1/3], 0.5),   # feat4: 5x4
-    ([1, 2, 0.5], 0.65),          # feat5: 3x2
-    ([1, 2, 0.5], 0.8),           # feat6: 1x1
+    ([1, 2, 0.5], 0.1),           # feat1: small objects
+    ([1, 2, 0.5, 3, 1/3], 0.2),   # feat2: medium objects  
+    ([1, 2, 0.5, 3, 1/3], 0.375), # feat3: larger objects
+    ([1, 2, 0.5, 3, 1/3], 0.55),  # feat4: large vehicles
+    ([1, 2, 0.5], 0.725),         # feat5: very large objects
 ]
 
-# Feature map sizes for 640x480 input
+# Feature map sizes for 482x442 input (actual TUMTraf image size)
+# After successive /2 pooling: 241x221 → 120x110 → 60x55 → 30x27 → 15x13 → 7x6
 DEFAULT_FEAT_SIZES = [
-    (40, 30), (20, 15), (10, 7), (5, 4), (3, 2), (1, 1)
+    (60, 55),   # feat1: block3 output
+    (30, 27),   # feat2: block4 output
+    (15, 13),   # feat3: block5 output
+    (15, 13),   # feat4: extra1 (same size, no pool)
+    (7, 6),     # feat5: extra2 (stride 2)
 ]
 
 

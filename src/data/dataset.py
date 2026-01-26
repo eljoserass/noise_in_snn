@@ -147,7 +147,8 @@ class TUMTrafSSD_ANN(Dataset):
                         
                         if nw > 0 and nh > 0:
                             boxes.append([cx, cy, nw, nh])
-                            labels.append(self.class_to_idx[obj_type])
+                            # Add 1 to labels: 0=background (used by loss), 1-6=object classes
+                            labels.append(self.class_to_idx[obj_type] + 1)
         
         return boxes, labels
     
@@ -260,7 +261,8 @@ class TUMTrafSSD_SNN(Dataset):
                         
                         if nw > 0 and nh > 0:
                             boxes.append([cx, cy, nw, nh])
-                            labels.append(self.class_to_idx[obj_type])
+                            # Add 1 to labels: 0=background (used by loss), 1-6=object classes
+                            labels.append(self.class_to_idx[obj_type] + 1)
         
         return boxes, labels
     

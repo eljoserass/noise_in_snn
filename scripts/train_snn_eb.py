@@ -13,10 +13,15 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
+from typing import Tuple
 
 from src.data.dataset import TUMTrafSSD_SNN
 from src.models.snn import VGG11_SSD_SNN
-from src.utils import SSDLoss, match_anchors_to_targets
+from src.utils import SSDLoss, match_anchors_to_targets, generate_anchors
+
+
+# Global anchors (generated once at start)
+ANCHORS = None
 
 
 def collate_fn_snn(batch):
@@ -33,13 +38,16 @@ def collate_fn_snn(batch):
 
 
 def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSDLoss,
-                    optimizer: optim.Optimizer, device: torch.device, epoch: int) -> float:
+                    optimizer: optim.Optimizer, device: torch.device, epoch: int,
+                    anchors: torch.Tensor) -> Tuple[float, float, float]:
     """
     Train for one epoch with event sequences.
     SNN processes each frame in sequence with temporal integration via membrane states.
     """
     model.train()
     total_loss = 0.0
+    total_cls_loss = 0.0
+    total_loc_loss = 0.0
     
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch_idx, (sequences, targets_sequences) in enumerate(pbar):
@@ -47,6 +55,8 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
         # targets_sequences: list of lists of target dicts
         
         batch_loss = 0.0
+        batch_cls_loss = 0.0
+        batch_loc_loss = 0.0
         
         for seq_images, seq_targets in zip(sequences, targets_sequences):
             # seq_images: (T, C, H, W) - one sequence
@@ -57,54 +67,123 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
             
             # Process each frame in sequence
             T = seq_images.shape[0]
+            seq_loss = 0.0
+            seq_cls_loss = 0.0
+            seq_loc_loss = 0.0
+            
             for t in range(T):
                 frame = seq_images[t:t+1].to(device)  # (1, C, H, W)
+                target = seq_targets[t]
                 
                 # Forward pass - membrane states carry over!
                 cls_preds, loc_preds = model(frame)
                 
+                # Match anchors to ground truth
+                gt_boxes = target['boxes'].to(device)
+                gt_labels = target['labels'].to(device)
+                
+                cls_target, loc_target = match_anchors_to_targets(
+                    anchors, gt_boxes, gt_labels, iou_threshold=0.5
+                )
+                
+                # Add batch dimension
+                cls_target = cls_target.unsqueeze(0)  # (1, num_anchors)
+                loc_target = loc_target.unsqueeze(0)  # (1, num_anchors, 4)
+                
                 # Compute loss for this frame
-                # loss = criterion(cls_preds, loc_preds, seq_targets[t])
-                # batch_loss += loss
+                loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
+                seq_loss += loss
+                seq_cls_loss += cls_loss
+                seq_loc_loss += loc_loss
+            
+            # Average loss over sequence timesteps
+            seq_loss = seq_loss / T
+            seq_cls_loss = seq_cls_loss / T
+            seq_loc_loss = seq_loc_loss / T
+            
+            batch_loss += seq_loss
+            batch_cls_loss += seq_cls_loss
+            batch_loc_loss += seq_loc_loss
+        
+        # Average over batch (usually batch_size=1 for sequences)
+        batch_loss = batch_loss / len(sequences)
+        batch_cls_loss = batch_cls_loss / len(sequences)
+        batch_loc_loss = batch_loc_loss / len(sequences)
         
         # Backward pass after processing sequence(s)
         optimizer.zero_grad()
-        # batch_loss.backward()  # Surrogate gradient applied automatically!
+        batch_loss.backward()  # Surrogate gradient applied automatically!
         
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
         
         optimizer.step()
         
-        # total_loss += batch_loss.item()
+        total_loss += batch_loss.item()
+        total_cls_loss += batch_cls_loss.item()
+        total_loc_loss += batch_loc_loss.item()
         
         pbar.set_postfix({
-            'loss': f'--',
+            'loss': f'{batch_loss.item():.4f}',
+            'cls': f'{batch_cls_loss.item():.4f}',
+            'loc': f'{batch_loc_loss.item():.4f}'
         })
     
     avg_loss = total_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_cls_loss = total_cls_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_loc_loss = total_loc_loss / len(dataloader) if len(dataloader) > 0 else 0.0
     
-    return avg_loss
+    return avg_loss, avg_cls_loss, avg_loc_loss
 
 
 @torch.no_grad()
-def validate(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSDLoss, device: torch.device) -> float:
+def validate(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSDLoss, 
+             device: torch.device, anchors: torch.Tensor) -> Tuple[float, float, float]:
     """Validate the model on event sequences."""
     model.eval()
     total_loss = 0.0
+    total_cls_loss = 0.0
+    total_loc_loss = 0.0
     
     for sequences, targets_sequences in tqdm(dataloader, desc="Validation"):
         for seq_images, seq_targets in zip(sequences, targets_sequences):
             model.reset_states()
             
             T = seq_images.shape[0]
+            seq_loss = 0.0
+            seq_cls_loss = 0.0
+            seq_loc_loss = 0.0
+            
             for t in range(T):
                 frame = seq_images[t:t+1].to(device)
+                target = seq_targets[t]
+                
                 cls_preds, loc_preds = model(frame)
-                # loss = criterion(cls_preds, loc_preds, seq_targets[t])
-                # total_loss += loss.item()
+                
+                gt_boxes = target['boxes'].to(device)
+                gt_labels = target['labels'].to(device)
+                
+                cls_target, loc_target = match_anchors_to_targets(
+                    anchors, gt_boxes, gt_labels, iou_threshold=0.5
+                )
+                
+                cls_target = cls_target.unsqueeze(0)
+                loc_target = loc_target.unsqueeze(0)
+                
+                loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
+                seq_loss += loss
+                seq_cls_loss += cls_loss
+                seq_loc_loss += loc_loss
+            
+            total_loss += (seq_loss / T).item()
+            total_cls_loss += (seq_cls_loss / T).item()
+            total_loc_loss += (seq_loc_loss / T).item()
     
-    return total_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_loss = total_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_cls_loss = total_cls_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_loc_loss = total_loc_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    
+    return avg_loss, avg_cls_loss, avg_loc_loss
 
 
 def parse_args():
@@ -146,6 +225,13 @@ def parse_args():
     parser.add_argument("--save-freq", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     
+    # W&B options
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="neuromorph-vs-noise", 
+                        help="W&B project name")
+    parser.add_argument("--wandb-run-name", type=str, default=None, 
+                        help="W&B run name (default: auto-generated)")
+    
     return parser.parse_args()
 
 
@@ -157,6 +243,28 @@ def main():
     
     device = torch.device(args.device)
     print(f"Using device: {device}")
+    
+    # Initialize W&B if enabled
+    wandb_run = None
+    if args.wandb:
+        try:
+            import wandb
+            wandb_run = wandb.init(
+                project=args.wandb_project,
+                name=args.wandb_run_name,
+                config=vars(args),
+                tags=["snn", "event-based", "vgg11-ssd"]
+            )
+            print(f"✓ W&B initialized: {wandb_run.url}")
+        except ImportError:
+            print("⚠ W&B not installed. Run: pip install wandb")
+            args.wandb = False
+    
+    # Generate default anchors ONCE
+    global ANCHORS
+    ANCHORS = generate_anchors().to(device)
+    num_anchors = ANCHORS.size(0)
+    print(f"Generated {num_anchors} default anchors")
     
     # Event image transforms (different from RGB)
     # Event frames typically don't need ImageNet normalization
@@ -208,7 +316,7 @@ def main():
     # Create SNN model
     from snntorch import surrogate
     model = VGG11_SSD_SNN(
-        num_classes=args.num_classes,
+        num_classes=args.num_classes + 1,  # +1 for background class
         beta=args.beta,
         threshold=args.threshold,
         spike_grad=surrogate.fast_sigmoid(slope=args.surrogate_slope)
@@ -222,7 +330,7 @@ def main():
     print(f"SNN Config: beta={args.beta}, threshold={args.threshold}, surrogate_slope={args.surrogate_slope}")
     
     # Loss function
-    criterion = SSDLoss(num_classes=args.num_classes)
+    criterion = SSDLoss(num_classes=args.num_classes + 1)  # +1 for background
     
     # Optimizer
     optimizer = optim.SGD(
@@ -258,21 +366,39 @@ def main():
     
     for epoch in range(start_epoch, args.epochs):
         # Train
-        train_loss = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch
+        train_loss, train_cls_loss, train_loc_loss = train_one_epoch(
+            model, train_loader, criterion, optimizer, device, epoch, ANCHORS
         )
         
         # Validate
-        val_loss = validate(model, val_loader, criterion, device)
+        val_loss, val_cls_loss, val_loc_loss = validate(model, val_loader, criterion, device, ANCHORS)
         
         # Update scheduler
         scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
 
-        print(f"\nEpoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+        print(f"\nEpoch {epoch}: "
+              f"Train Loss = {train_loss:.4f} (cls: {train_cls_loss:.4f}, loc: {train_loc_loss:.4f}), "
+              f"Val Loss = {val_loss:.4f} (cls: {val_cls_loss:.4f}, loc: {val_loc_loss:.4f}), "
+              f"LR = {current_lr:.6f}")
+        
+        # Log to W&B
+        if args.wandb and wandb_run:
+            wandb.log({
+                "epoch": epoch,
+                "train/loss": train_loss,
+                "train/cls_loss": train_cls_loss,
+                "train/loc_loss": train_loc_loss,
+                "val/loss": val_loss,
+                "val/cls_loss": val_cls_loss,
+                "val/loc_loss": val_loc_loss,
+                "learning_rate": current_lr,
+            })
         
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            checkpoint_path = os.path.join(args.save_dir, 'vgg11_ssd_snn_best.pth')
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -280,8 +406,12 @@ def main():
                 'scheduler_state_dict': scheduler.state_dict(),
                 'best_val_loss': best_val_loss,
                 'args': vars(args)
-            }, os.path.join(args.save_dir, 'vgg11_ssd_snn_best.pth'))
-            print(f"Saved best model with val loss: {val_loss:.4f}")
+            }, checkpoint_path)
+            print(f"✓ Saved best model with val loss: {val_loss:.4f}")
+            
+            # Log best model to W&B
+            if args.wandb and wandb_run:
+                wandb.save(checkpoint_path)
         
         # Save checkpoint periodically
         if (epoch + 1) % args.save_freq == 0:
@@ -296,6 +426,10 @@ def main():
     
     print("\nTraining complete!")
     print(f"Best validation loss: {best_val_loss:.4f}")
+    
+    # Finish W&B run
+    if args.wandb and wandb_run:
+        wandb.finish()
 
 
 if __name__ == "__main__":

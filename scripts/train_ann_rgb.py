@@ -13,10 +13,15 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
+from typing import Tuple
 
 from src.data.dataset import TUMTrafSSD_ANN
 from src.models.ann import VGG11_SSD_ANN
-from src.utils import SSDLoss, match_anchors_to_targets
+from src.utils import SSDLoss, match_anchors_to_targets, generate_anchors
+
+
+# Global anchors (generated once at start)
+ANCHORS = None
 
 
 def collate_fn(batch):
@@ -25,7 +30,8 @@ def collate_fn(batch):
 
 
 def train_one_epoch(model: VGG11_SSD_ANN, dataloader: DataLoader, criterion: SSDLoss,
-                    optimizer: optim.Optimizer, device: torch.device, epoch: int) -> float:
+                    optimizer: optim.Optimizer, device: torch.device, epoch: int, 
+                    anchors: torch.Tensor) -> float:
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
@@ -39,37 +45,63 @@ def train_one_epoch(model: VGG11_SSD_ANN, dataloader: DataLoader, criterion: SSD
         # Forward pass
         cls_preds, loc_preds = model(images)
         
-        # For now: simple loss (anchors would be matched with targets in full implementation)
-        # This is a placeholder - you'd implement proper SSD matching and loss
+        # Match anchors to ground truth for each image in batch
+        batch_size = images.size(0)
+        batch_cls_targets = []
+        batch_loc_targets = []
+        
+        for i in range(batch_size):
+            gt_boxes = targets[i]['boxes'].to(device)
+            gt_labels = targets[i]['labels'].to(device)
+            
+            # Match anchors to ground truth
+            cls_target, loc_target = match_anchors_to_targets(
+                anchors, gt_boxes, gt_labels, iou_threshold=0.5
+            )
+            batch_cls_targets.append(cls_target)
+            batch_loc_targets.append(loc_target)
+        
+        # Stack targets
+        cls_targets = torch.stack(batch_cls_targets, dim=0)  # (B, num_anchors)
+        loc_targets = torch.stack(batch_loc_targets, dim=0)  # (B, num_anchors, 4)
         
         # Compute loss
-        # loss = criterion(cls_preds, loc_preds, targets)
+        loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_targets, loc_targets)
         
         # Backward pass
         optimizer.zero_grad()
-        # loss.backward()
+        loss.backward()
         
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
         
         optimizer.step()
         
-        # total_loss += loss.item()
+        total_loss += loss.item()
+        total_cls_loss += cls_loss.item()
+        total_loc_loss += loc_loss.item()
         
         pbar.set_postfix({
-            'loss': f'--',
+            'loss': f'{loss.item():.4f}',
+            'cls': f'{cls_loss.item():.4f}',
+            'loc': f'{loc_loss.item():.4f}'
         })
     
     avg_loss = total_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_cls_loss = total_cls_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_loc_loss = total_loc_loss / len(dataloader) if len(dataloader) > 0 else 0.0
     
-    return avg_loss
+    return avg_loss, avg_cls_loss, avg_loc_loss
 
 
 @torch.no_grad()
-def validate(model: VGG11_SSD_ANN, dataloader: DataLoader, criterion: SSDLoss, device: torch.device) -> float:
+def validate(model: VGG11_SSD_ANN, dataloader: DataLoader, criterion: SSDLoss, 
+             device: torch.device, anchors: torch.Tensor) -> Tuple[float, float, float]:
     """Validate the model."""
     model.eval()
     total_loss = 0.0
+    total_cls_loss = 0.0
+    total_loc_loss = 0.0
     
     for images, targets in tqdm(dataloader, desc="Validation"):
         images = images.to(device)
@@ -77,11 +109,35 @@ def validate(model: VGG11_SSD_ANN, dataloader: DataLoader, criterion: SSDLoss, d
         # Forward pass
         cls_preds, loc_preds = model(images)
         
-        # Compute loss (placeholder)
-        # loss = criterion(cls_preds, loc_preds, targets)
-        # total_loss += loss.item()
+        # Match anchors to ground truth for each image in batch
+        batch_size = images.size(0)
+        batch_cls_targets = []
+        batch_loc_targets = []
+        
+        for i in range(batch_size):
+            gt_boxes = targets[i]['boxes'].to(device)
+            gt_labels = targets[i]['labels'].to(device)
+            
+            cls_target, loc_target = match_anchors_to_targets(
+                anchors, gt_boxes, gt_labels, iou_threshold=0.5
+            )
+            batch_cls_targets.append(cls_target)
+            batch_loc_targets.append(loc_target)
+        
+        cls_targets = torch.stack(batch_cls_targets, dim=0)
+        loc_targets = torch.stack(batch_loc_targets, dim=0)
+        
+        # Compute loss
+        loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_targets, loc_targets)
+        total_loss += loss.item()
+        total_cls_loss += cls_loss.item()
+        total_loc_loss += loc_loss.item()
     
-    return total_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_loss = total_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_cls_loss = total_cls_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    avg_loc_loss = total_loc_loss / len(dataloader) if len(dataloader) > 0 else 0.0
+    
+    return avg_loss, avg_cls_loss, avg_loc_loss
 
 
 def parse_args():
@@ -115,6 +171,13 @@ def parse_args():
     parser.add_argument("--save-freq", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     
+    # W&B options
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="neuromorph-vs-noise", 
+                        help="W&B project name")
+    parser.add_argument("--wandb-run-name", type=str, default=None, 
+                        help="W&B run name (default: auto-generated)")
+    
     return parser.parse_args()
 
 
@@ -126,6 +189,28 @@ def main():
     
     device = torch.device(args.device)
     print(f"Using device: {device}")
+    
+    # Initialize W&B if enabled
+    wandb_run = None
+    if args.wandb:
+        try:
+            import wandb
+            wandb_run = wandb.init(
+                project=args.wandb_project,
+                name=args.wandb_run_name,
+                config=vars(args),
+                tags=["ann", "rgb", "vgg11-ssd"]
+            )
+            print(f"✓ W&B initialized: {wandb_run.url}")
+        except ImportError:
+            print("⚠ W&B not installed. Run: pip install wandb")
+            args.wandb = False
+    
+    # Generate default anchors ONCE
+    global ANCHORS
+    ANCHORS = generate_anchors().to(device)
+    num_anchors = ANCHORS.size(0)
+    print(f"Generated {num_anchors} default anchors")
     
     # Image transforms
     transform = transforms.Compose([
@@ -174,7 +259,7 @@ def main():
     )
     
     # Create model
-    model = VGG11_SSD_ANN(num_classes=args.num_classes)
+    model = VGG11_SSD_ANN(num_classes=args.num_classes + 1)  # +1 for background class
     model = model.to(device)
     
     # Print model summary
@@ -183,7 +268,7 @@ def main():
     print(f"Parameters: {num_params:,}")
     
     # Loss function
-    criterion = SSDLoss(num_classes=args.num_classes)
+    criterion = SSDLoss(num_classes=args.num_classes + 1)  # +1 for background
     
     # Optimizer
     optimizer = optim.SGD(
@@ -219,21 +304,39 @@ def main():
     
     for epoch in range(start_epoch, args.epochs):
         # Train
-        train_loss = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch
+        train_loss, train_cls_loss, train_loc_loss = train_one_epoch(
+            model, train_loader, criterion, optimizer, device, epoch, ANCHORS
         )
         
         # Validate
-        val_loss = validate(model, val_loader, criterion, device)
+        val_loss, val_cls_loss, val_loc_loss = validate(model, val_loader, criterion, device, ANCHORS)
         
         # Update scheduler
         scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
 
-        print(f"\nEpoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
+        print(f"\nEpoch {epoch}: "
+              f"Train Loss = {train_loss:.4f} (cls: {train_cls_loss:.4f}, loc: {train_loc_loss:.4f}), "
+              f"Val Loss = {val_loss:.4f} (cls: {val_cls_loss:.4f}, loc: {val_loc_loss:.4f}), "
+              f"LR = {current_lr:.6f}")
+        
+        # Log to W&B
+        if args.wandb and wandb_run:
+            wandb.log({
+                "epoch": epoch,
+                "train/loss": train_loss,
+                "train/cls_loss": train_cls_loss,
+                "train/loc_loss": train_loc_loss,
+                "val/loss": val_loss,
+                "val/cls_loss": val_cls_loss,
+                "val/loc_loss": val_loc_loss,
+                "learning_rate": current_lr,
+            })
         
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            checkpoint_path = os.path.join(args.save_dir, 'vgg11_ssd_ann_best.pth')
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -241,8 +344,12 @@ def main():
                 'scheduler_state_dict': scheduler.state_dict(),
                 'best_val_loss': best_val_loss,
                 'args': vars(args)
-            }, os.path.join(args.save_dir, 'vgg11_ssd_ann_best.pth'))
-            print(f"Saved best model with val loss: {val_loss:.4f}")
+            }, checkpoint_path)
+            print(f"✓ Saved best model with val loss: {val_loss:.4f}")
+            
+            # Log best model to W&B
+            if args.wandb and wandb_run:
+                wandb.save(checkpoint_path)
         
         # Save checkpoint periodically
         if (epoch + 1) % args.save_freq == 0:
@@ -257,6 +364,10 @@ def main():
     
     print("\nTraining complete!")
     print(f"Best validation loss: {best_val_loss:.4f}")
+    
+    # Finish W&B run
+    if args.wandb and wandb_run:
+        wandb.finish()
 
 
 if __name__ == "__main__":

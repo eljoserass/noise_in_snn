@@ -136,18 +136,18 @@ class TestTUMTrafSSD_ANN:
         Test: Labels are valid class indices.
         Validates:
         - Labels are integers
-        - Labels in valid range [0, num_classes-1]
+        - Labels in valid range [1, num_classes] (0=background for loss)
         """
         _, targets = dataset[0]
         labels = targets['labels']
         
         if len(labels) > 0:
             num_classes = len(dataset.CLASSES)
-            assert labels.min() >= 0, "Labels should be >= 0"
-            assert labels.max() < num_classes, f"Labels should be < {num_classes}"
+            assert labels.min() >= 1, f"Labels should be >= 1 (0=background), got {labels.min()}"
+            assert labels.max() <= num_classes, f"Labels should be <= {num_classes}, got {labels.max()}"
             assert labels.dtype == torch.long, "Labels should be torch.long"
             
-            print(f"\n✓ Labels range: [{labels.min()}, {labels.max()}], dtype={labels.dtype}")
+            print(f"\n✓ Labels range: [{labels.min()}, {labels.max()}] (1-indexed, 0=background), dtype={labels.dtype}")
     
     def test_multiple_samples(self, dataset):
         """

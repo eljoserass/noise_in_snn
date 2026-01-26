@@ -62,11 +62,11 @@ case $STAGE in
         ;;
     train-ann)
         echo "Running ANN training..."
-        python scripts/train_ann.py "$@"
+        python scripts/train_ann_rgb.py "$@"
         ;;
     train-snn)
         echo "Running SNN training..."
-        python scripts/train_snn.py "$@"
+        python scripts/train_snn_eb.py "$@"
         ;;
     eval)
         echo "Running evaluation..."
@@ -86,10 +86,10 @@ case $STAGE in
         # Determine which training script to run based on arguments
         if [[ "$*" == *"--eb"* ]]; then
             echo "Step 2/3: Training SNN (event-based)..."
-            python scripts/train_snn.py "$@"
+            python scripts/train_snn_eb.py "$@"
         else
             echo "Step 2/3: Training ANN (RGB)..."
-            python scripts/train_ann.py "$@"
+            python scripts/train_ann_rgb.py "$@"
         fi
         
         if [ $? -ne 0 ]; then
@@ -134,9 +134,9 @@ case $STAGE in
             
             # Train both in parallel
             echo "Step 2/3: Training ANN and SNN in parallel..."
-            python scripts/train_ann.py --rgb $FILTERED_ARGS &
+            python scripts/train_ann_rgb.py --rgb $FILTERED_ARGS &
             PID_ANN=$!
-            python scripts/train_snn.py --eb $FILTERED_ARGS &
+            python scripts/train_snn_eb.py --eb $FILTERED_ARGS &
             PID_SNN=$!
             
             # Wait for both to complete
@@ -189,7 +189,7 @@ case $STAGE in
             
             # RGB Pipeline
             echo "Step 2/6: Training ANN (RGB)..."
-            python scripts/train_ann.py --rgb $FILTERED_ARGS
+            python scripts/train_ann_rgb.py --rgb $FILTERED_ARGS
             if [ $? -ne 0 ]; then
                 echo "ANN training failed!"
                 exit 1
@@ -204,7 +204,7 @@ case $STAGE in
             
             # EB Pipeline
             echo "Step 4/6: Training SNN (EB)..."
-            python scripts/train_snn.py --eb $FILTERED_ARGS
+            python scripts/train_snn_eb.py --eb $FILTERED_ARGS
             if [ $? -ne 0 ]; then
                 echo "SNN training failed!"
                 exit 1

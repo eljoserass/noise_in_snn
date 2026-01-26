@@ -202,7 +202,7 @@ class TestTrainingLoopStructure:
         sig = inspect.signature(train_one_epoch_ann)
         params = list(sig.parameters.keys())
         
-        expected_params = ['model', 'dataloader', 'criterion', 'optimizer', 'device', 'epoch']
+        expected_params = ['model', 'dataloader', 'criterion', 'optimizer', 'device', 'epoch', 'anchors']
         assert params == expected_params, f"Expected params {expected_params}, got {params}"
         
         print(f"\n✓ train_one_epoch (ANN) has correct signature")
@@ -216,7 +216,7 @@ class TestTrainingLoopStructure:
         sig = inspect.signature(train_one_epoch_snn)
         params = list(sig.parameters.keys())
         
-        expected_params = ['model', 'dataloader', 'criterion', 'optimizer', 'device', 'epoch']
+        expected_params = ['model', 'dataloader', 'criterion', 'optimizer', 'device', 'epoch', 'anchors']
         assert params == expected_params, f"Expected params {expected_params}, got {params}"
         
         print(f"\n✓ train_one_epoch (SNN) has correct signature")
