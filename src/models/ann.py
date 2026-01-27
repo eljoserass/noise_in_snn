@@ -44,7 +44,7 @@ class VGG11_SSD_ANN(nn.Module):
             nn.Conv2d(256, 256, 3, padding=1),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, 2)
-        )  # Feature map 1: [B, 256, 38, 38]
+        )  # Feature map 1: [B, 256, 60, 80] for 480×640 input
         
         # Block 4: 2 conv layers
         self.block4 = nn.Sequential(
@@ -53,7 +53,7 @@ class VGG11_SSD_ANN(nn.Module):
             nn.Conv2d(512, 512, 3, padding=1),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, 2)
-        )  # Feature map 2: [B, 512, 19, 19]
+        )  # Feature map 2: [B, 512, 30, 40] for 480×640 input
         
         # Block 5: 2 conv layers
         self.block5 = nn.Sequential(
@@ -62,7 +62,7 @@ class VGG11_SSD_ANN(nn.Module):
             nn.Conv2d(512, 512, 3, padding=1),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, 2)
-        )  # Feature map 3: [B, 512, 10, 10]
+        )  # Feature map 3: [B, 512, 15, 20] for 480×640 input
         
         # Additional SSD layers for more feature maps
         self.extra1 = nn.Sequential(
@@ -70,14 +70,14 @@ class VGG11_SSD_ANN(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(1024, 1024, 1),
             nn.ReLU(inplace=True)
-        )  # Feature map 4: [B, 1024, 10, 10]
+        )  # Feature map 4: [B, 1024, 15, 20] for 480×640 input (no pooling)
         
         self.extra2 = nn.Sequential(
             nn.Conv2d(1024, 256, 1),
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 512, 3, stride=2, padding=1),
             nn.ReLU(inplace=True)
-        )  # Feature map 5: [B, 512, 5, 5]
+        )  # Feature map 5: [B, 512, 8, 10] for 480×640 input
         
         # Number of anchors per feature map
         self.num_anchors = [4, 6, 6, 6, 4]
@@ -111,17 +111,17 @@ class VGG11_SSD_ANN(nn.Module):
             classifications: Class predictions (batch, num_anchors, num_classes)
             regressions: Location predictions (batch, num_anchors, 4)
         """
-        # x: [B, 3, 300, 300] - single RGB frame
+        # x: [B, 3, 480, 640] - single RGB frame (TUMTraf RGB)
         
         # Backbone
-        x = self.block1(x)  # [B, 64, 150, 150]
-        x = self.block2(x)  # [B, 128, 75, 75]
+        x = self.block1(x)  # [B, 64, 240, 320]
+        x = self.block2(x)  # [B, 128, 120, 160]
         
-        feat1 = self.block3(x)  # [B, 256, 38, 38]
-        feat2 = self.block4(feat1)  # [B, 512, 19, 19]
-        feat3 = self.block5(feat2)  # [B, 512, 10, 10]
-        feat4 = self.extra1(feat3)  # [B, 1024, 10, 10]
-        feat5 = self.extra2(feat4)  # [B, 512, 5, 5]
+        feat1 = self.block3(x)  # [B, 256, 60, 80]
+        feat2 = self.block4(feat1)  # [B, 512, 30, 40]
+        feat3 = self.block5(feat2)  # [B, 512, 15, 20]
+        feat4 = self.extra1(feat3)  # [B, 1024, 15, 20]
+        feat5 = self.extra2(feat4)  # [B, 512, 8, 10]
         
         features = [feat1, feat2, feat3, feat4, feat5]
         
