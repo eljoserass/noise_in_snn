@@ -619,7 +619,7 @@ def get_dataloader(args, model_type):
             img_dir=img_dir,
             label_dir=label_dir,
             transform=transform,
-            target_size=(442, 482)
+            target_size=(480, 640)  # ANN trained on RGB 480x640
         )
         
         def collate_fn_grouped(batch):

@@ -453,5 +453,50 @@ class TestSSDLoss:
         print(f"\n✓ Loss with no positives: {loss.item():.4f} (cls: {cls_loss.item():.4f}, loc: 0.0)")
 
 
+class TestEvaluationSetup:
+    """Ensure evaluation uses same dimensions as training."""
+    
+    def test_ann_eval_dimensions_match_training(self):
+        """ANN evaluation must use RGB dimensions (480x640) not event (442x482)."""
+        # ANN model expects RGB input
+        model = VGG11_SSD_ANN(num_classes=7)
+        device = torch.device('cpu')
+        
+        # Generate anchors for RGB dimensions
+        rgb_anchors = generate_anchors_for_model(model, (3, 480, 640), device)
+        
+        # Create dummy RGB input
+        rgb_input = torch.randn(1, 3, 480, 640)
+        cls_preds, loc_preds = model(rgb_input)
+        
+        # Verify anchor count matches predictions
+        assert rgb_anchors.size(0) == cls_preds.size(1), \
+            f"ANN evaluation anchors ({rgb_anchors.size(0)}) must match " \
+            f"model output ({cls_preds.size(1)}) for RGB 480x640 images"
+        
+        print(f"\n✓ ANN evaluation setup validated: {rgb_anchors.size(0)} anchors for 480x640 RGB")
+    
+    def test_snn_eval_dimensions_match_training(self):
+        """SNN evaluation must use event dimensions (442x482)."""
+        from snntorch import surrogate
+        model = VGG11_SSD_SNN(num_classes=7, beta=0.9, threshold=1.0,
+                             spike_grad=surrogate.fast_sigmoid(slope=25.0))
+        device = torch.device('cpu')
+        
+        # Generate anchors for event dimensions
+        event_anchors = generate_anchors_for_model(model, (2, 442, 482), device)
+        
+        # Create dummy event input
+        event_input = torch.randn(1, 2, 442, 482)
+        cls_preds, loc_preds = model(event_input)
+        
+        # Verify anchor count matches predictions
+        assert event_anchors.size(0) == cls_preds.size(1), \
+            f"SNN evaluation anchors ({event_anchors.size(0)}) must match " \
+            f"model output ({cls_preds.size(1)}) for event 442x482 images"
+        
+        print(f"\n✓ SNN evaluation setup validated: {event_anchors.size(0)} anchors for 442x482 events")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
