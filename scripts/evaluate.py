@@ -52,11 +52,12 @@ def parse_args():
     
     # Model configuration
     parser.add_argument("--model-path", type=str, default=None, 
-                        help="Path to local checkpoint OR wandb run path (wandb://entity/project/run_id/checkpoint_name)")
+                        help="Path to local checkpoint file (not directory)")
     parser.add_argument("--wandb-run-id", type=str, default=None,
                         help="W&B run ID to download checkpoint from (alternative to --model-path)")
-    parser.add_argument("--wandb-checkpoint-name", type=str, default="vgg11_ssd_ann_best.pth",
-                        help="Checkpoint filename in W&B run (used with --wandb-run-id)")
+    parser.add_argument("--wandb-checkpoint-name", type=str, default=None,
+                        help="Checkpoint filename in W&B run (used with --wandb-run-id). "
+                             "If not provided, defaults to 'vgg11_ssd_{model_type}_best.pth'")
     parser.add_argument("--model-type", type=str, required=True, choices=["ann", "snn"],
                         help="Model type: ann or snn")
     parser.add_argument("--num-classes", type=int, default=6, help="Number of object classes")
@@ -592,6 +593,18 @@ def load_model(args, device):
             raise ImportError("W&B not available. Install with: pip install wandb")
         
         import wandb
+        
+        # Auto-detect checkpoint name if not provided
+        if args.wandb_checkpoint_name is None:
+            checkpoint_filename = f"vgg11_ssd_{args.model_type}_best.pth"
+            # W&B stores checkpoints inside a checkpoints/ folder
+            args.wandb_checkpoint_name = f"checkpoints/{checkpoint_filename}"
+            print(f"Using default checkpoint path: {args.wandb_checkpoint_name}")
+        elif not args.wandb_checkpoint_name.startswith("checkpoints/"):
+            # If user provided a name without checkpoints/ prefix, add it
+            args.wandb_checkpoint_name = f"checkpoints/{args.wandb_checkpoint_name}"
+            print(f"Prepending checkpoints/ to path: {args.wandb_checkpoint_name}")
+        
         print(f"Downloading checkpoint from W&B run: {args.wandb_run_id}")
         api = wandb.Api()
         run = api.run(f"{wandb.run.entity if wandb.run else 'joserass'}/{args.wandb_project}/{args.wandb_run_id}")
@@ -602,6 +615,16 @@ def load_model(args, device):
         print(f"✓ Downloaded: {checkpoint_path}")
     elif args.model_path:
         checkpoint_path = args.model_path
+        # Check if path is a directory
+        if os.path.isdir(checkpoint_path):
+            # Auto-detect checkpoint file in directory
+            default_checkpoint = f"vgg11_ssd_{args.model_type}_best.pth"
+            checkpoint_path = os.path.join(checkpoint_path, default_checkpoint)
+            print(f"Directory provided, using: {checkpoint_path}")
+        
+        # Verify file exists
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
     else:
         raise ValueError("Must provide either --model-path or --wandb-run-id")
     
