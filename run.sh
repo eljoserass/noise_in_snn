@@ -187,9 +187,9 @@ case $STAGE in
             
             # Train both in parallel with GPU assignment
             echo "Step 2/3: Training ANN (GPU $GPU_ANN) and SNN (GPU $GPU_SNN) in parallel..."
-            CUDA_VISIBLE_DEVICES=$GPU_ANN python scripts/train_ann_rgb.py --rgb $FILTERED_ARGS &
+            CUDA_VISIBLE_DEVICES=$GPU_ANN python scripts/train_ann_rgb.py $FILTERED_ARGS &
             PID_ANN=$!
-            CUDA_VISIBLE_DEVICES=$GPU_SNN python scripts/train_snn_eb.py --eb $FILTERED_ARGS &
+            CUDA_VISIBLE_DEVICES=$GPU_SNN python scripts/train_snn_eb.py $FILTERED_ARGS &
             PID_SNN=$!
             
             # Wait for both to complete
@@ -257,7 +257,7 @@ case $STAGE in
             
             # RGB Pipeline
             echo "Step 2/6: Training ANN (RGB)..."
-            python scripts/train_ann_rgb.py --rgb $FILTERED_ARGS
+            python scripts/train_ann_rgb.py $FILTERED_ARGS
             if [ $? -ne 0 ]; then
                 echo "ANN training failed!"
                 exit 1
@@ -276,7 +276,7 @@ case $STAGE in
             
             # EB Pipeline
             echo "Step 4/6: Training SNN (EB)..."
-            python scripts/train_snn_eb.py --eb $FILTERED_ARGS
+            python scripts/train_snn_eb.py $FILTERED_ARGS
             if [ $? -ne 0 ]; then
                 echo "SNN training failed!"
                 exit 1
