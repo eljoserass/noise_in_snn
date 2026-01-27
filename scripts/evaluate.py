@@ -51,7 +51,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate VGG11-SSD models on TUMTraf test sets")
     
     # Model configuration
-    parser.add_argument("--model-path", type=str, required=True, help="Path to model checkpoint")
+    parser.add_argument("--model-path", type=str, default=None, 
+                        help="Path to local checkpoint OR wandb run path (wandb://entity/project/run_id/checkpoint_name)")
+    parser.add_argument("--wandb-run-id", type=str, default=None,
+                        help="W&B run ID to download checkpoint from (alternative to --model-path)")
+    parser.add_argument("--wandb-checkpoint-name", type=str, default="vgg11_ssd_ann_best.pth",
+                        help="Checkpoint filename in W&B run (used with --wandb-run-id)")
     parser.add_argument("--model-type", type=str, required=True, choices=["ann", "snn"],
                         help="Model type: ann or snn")
     parser.add_argument("--num-classes", type=int, default=6, help="Number of object classes")
@@ -64,8 +69,10 @@ def parse_args():
     # Data paths
     parser.add_argument("--data-path", type=str, default="data/preprocessed",
                         help="Path to preprocessed data")
-    parser.add_argument("--test-split", type=str, default="test/day",
-                        help="Test split: test/day, test/night_with_light_off, test/night_with_light_on")
+    parser.add_argument("--test-split", type=str, nargs="+",
+                        default=["test/day", "test/night_with_light_on", "test/night_with_light_off"],
+                        help="Test split(s): test/day, test/night_with_light_off, test/night_with_light_on. "
+                             "Can specify multiple splits. Default: all three test splits")
     
     # Evaluation parameters
     parser.add_argument("--batch-size", type=int, default=1, 
@@ -577,7 +584,28 @@ def post_process_detections(cls_preds, loc_preds, anchors, conf_threshold, nms_t
 
 
 def load_model(args, device):
-    """Load model from checkpoint."""
+    """Load model from checkpoint (local or W&B)."""
+    # Determine checkpoint path
+    if args.wandb_run_id:
+        # Download from W&B
+        if not WANDB_AVAILABLE:
+            raise ImportError("W&B not available. Install with: pip install wandb")
+        
+        import wandb
+        print(f"Downloading checkpoint from W&B run: {args.wandb_run_id}")
+        api = wandb.Api()
+        run = api.run(f"{wandb.run.entity if wandb.run else 'joserass'}/{args.wandb_project}/{args.wandb_run_id}")
+        
+        # Download the checkpoint file
+        checkpoint_file = run.file(args.wandb_checkpoint_name)
+        checkpoint_path = checkpoint_file.download(replace=True).name
+        print(f"✓ Downloaded: {checkpoint_path}")
+    elif args.model_path:
+        checkpoint_path = args.model_path
+    else:
+        raise ValueError("Must provide either --model-path or --wandb-run-id")
+    
+    # Create model
     if args.model_type == "ann":
         model = VGG11_SSD_ANN(num_classes=args.num_classes + 1)  # +1 for background
     else:  # snn
@@ -590,12 +618,12 @@ def load_model(args, device):
         )
     
     # Load checkpoint
-    checkpoint = torch.load(args.model_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     model.eval()
     
-    print(f"✓ Loaded {args.model_type.upper()} model from {args.model_path}")
+    print(f"✓ Loaded {args.model_type.upper()} model from {checkpoint_path}")
     print(f"  Epoch: {checkpoint.get('epoch', 'unknown')}")
     print(f"  Best val loss: {checkpoint.get('best_val_loss', 'unknown')}")
     
@@ -675,27 +703,10 @@ def main():
     device = torch.device(args.device)
     print(f"Using device: {device}")
     
-    # Initialize W&B if requested
-    if args.wandb:
-        if not WANDB_AVAILABLE:
-            print("Warning: wandb not installed. Install with: pip install wandb")
-            print("Continuing without W&B logging...")
-            args.wandb = False
-        else:
-            run_name = args.wandb_run_name or f"eval_{args.model_type}_{args.test_split.replace('/', '_')}"
-            wandb.init(
-                project=args.wandb_project,
-                name=run_name,
-                config=vars(args),
-                tags=[args.model_type, args.test_split, "evaluation"]
-            )
-            print(f"✓ W&B logging enabled: {wandb.run.url}")
-    
     # Load model first (needed to generate matching anchors)
     model = load_model(args, device)
     
     # Generate anchors dynamically to match model's feature maps
-    # This ensures anchors match the dimensions from training
     from src.utils import generate_anchors_for_model
     if args.model_type == "ann":
         input_shape = (3, 480, 640)  # RGB images
@@ -705,38 +716,98 @@ def main():
     anchors = generate_anchors_for_model(model, input_shape, device)
     print(f"Generated {anchors.size(0)} anchors matching model output")
     
-    # Create dataloader
-    print(f"\nLoading test data from: {args.data_path}/{args.test_split}")
-    dataloader = get_dataloader(args, args.model_type)
-    print(f"Test samples: {len(dataloader.dataset)}")
-    
-    # Create evaluator
+    # Class names for evaluation
     class_names = ['BICYCLE', 'BUS', 'CAR', 'PEDESTRIAN', 'TRAILER', 'TRUCK']
-    evaluator = DetectionEvaluator(
-        num_classes=args.num_classes,
-        iou_thresholds=args.iou_thresholds,
-        class_names=class_names
-    )
     
-    # Run inference
-    print(f"\nRunning {args.model_type.upper()} inference...")
-    if args.model_type == "ann":
-        run_inference_ann(model, dataloader, anchors, device, 
-                         args.conf_threshold, args.nms_threshold, evaluator)
-    else:
-        run_inference_snn(model, dataloader, anchors, device,
-                         args.conf_threshold, args.nms_threshold, evaluator)
+    # Iterate over all test splits
+    all_results = {}
     
-    # Compute metrics
-    print("\nComputing evaluation metrics...")
-    results = evaluator.compute_metrics()
+    for test_split in args.test_split:
+        print(f"\n{'='*80}")
+        print(f"Evaluating on: {test_split}")
+        print(f"{'='*80}")
+        
+        # Initialize W&B run for this split
+        wandb_run = None
+        if args.wandb:
+            if not WANDB_AVAILABLE:
+                print("Warning: wandb not installed. Install with: pip install wandb")
+                print("Continuing without W&B logging...")
+            else:
+                run_name = args.wandb_run_name or f"eval_{args.model_type}_{test_split.replace('/', '_')}"
+                wandb_run = wandb.init(
+                    project=args.wandb_project,
+                    name=run_name,
+                    config=vars(args),
+                    tags=[args.model_type, test_split, "evaluation"],
+                    reinit=True  # Allow multiple runs in same script
+                )
+                print(f"✓ W&B logging enabled: {wandb_run.url}")
+        
+        # Update args for this specific split
+        args.test_split = test_split
+        
+        # Create dataloader for this split
+        print(f"\nLoading test data from: {args.data_path}/{test_split}")
+        dataloader = get_dataloader(args, args.model_type)
+        print(f"Test samples: {len(dataloader.dataset)}")
+        
+        # Create evaluator
+        evaluator = DetectionEvaluator(
+            num_classes=args.num_classes,
+            iou_thresholds=args.iou_thresholds,
+            class_names=class_names
+        )
+        
+        # Run inference
+        print(f"\nRunning {args.model_type.upper()} inference...")
+        if args.model_type == "ann":
+            run_inference_ann(model, dataloader, anchors, device, 
+                             args.conf_threshold, args.nms_threshold, evaluator)
+        else:
+            run_inference_snn(model, dataloader, anchors, device,
+                             args.conf_threshold, args.nms_threshold, evaluator)
+        
+        # Compute metrics
+        print("\nComputing evaluation metrics...")
+        results = evaluator.compute_metrics()
+        all_results[test_split] = results
+        
+        # Print results for this split
+        print_evaluation_results(args, test_split, results)
+        
+        # Save results to JSON
+        output_file = os.path.join(
+            args.output_dir,
+            f"eval_{args.model_type}_{test_split.replace('/', '_')}.json"
+        )
+        save_results_json(results, args, output_file)
+        print(f"\n✓ Results saved to: {output_file}")
+        
+        # Log to W&B
+        if wandb_run:
+            log_to_wandb(results, args, output_file)
+            wandb.finish()
+            print("✓ Results logged to W&B")
     
-    # Print results
+    # Print summary across all splits
+    print(f"\n{'='*80}")
+    print(f"SUMMARY ACROSS ALL TEST SPLITS")
+    print(f"{'='*80}")
+    print(f"\nModel: {args.model_type.upper()}")
+    print(f"Confidence threshold: {args.conf_threshold}")
+    print(f"\nmAP@0.5 by split:")
+    for split, results in all_results.items():
+        print(f"  {split:30s}: {results['mAP@0.5']:.4f}")
+    print(f"\nOverall average mAP@0.5: {sum(r['mAP@0.5'] for r in all_results.values()) / len(all_results):.4f}")
+
+
+def print_evaluation_results(args, test_split, results):
+    """Print evaluation results in formatted output."""
     print("\n" + "="*60)
     print(f"EVALUATION RESULTS - {args.model_type.upper()}")
     print("="*60)
-    print(f"\nDataset: {args.test_split}")
-    print(f"Model: {args.model_path}")
+    print(f"\nDataset: {test_split}")
     print(f"\nImages evaluated: {results['num_images']}")
     print(f"Total predictions: {results['num_predictions']}")
     print(f"Total ground truths: {results['num_ground_truths']}")
@@ -753,7 +824,7 @@ def main():
         for class_name, metrics in per_class.items():
             print(f"  {class_name:12s}: AP={metrics['ap']:.4f}  "
                   f"(GT={metrics['num_gt']:4d}, Pred={metrics['num_pred']:4d}, "
-                  f"TP={metrics.get('tp', 0):4d}, FP={metrics.get('fp', 0):4d})")
+                  f"TP={metrics['true_positives']:4d}, FP={metrics['false_positives']:4d})")
     
     if 'latency' in results:
         print(f"\n{'Latency':=^60}")
@@ -766,16 +837,13 @@ def main():
         if 'flops_per_image' in results['energy']:
             print(f"FLOPs per image: {results['energy']['flops_per_image']:.2e}")
         if 'spikes_per_image' in results['energy']:
-            print(f"Spikes per image: {results['energy']['spikes_per_image']:.2e}")
+            print(f"Spikes per image: {results['energy']['spikes_per_image']:.2f}")
     
     print("="*60)
-    
-    # Save results to JSON
-    output_file = os.path.join(
-        args.output_dir,
-        f"eval_{args.model_type}_{args.test_split.replace('/', '_')}.json"
-    )
-    
+
+
+def save_results_json(results, args, output_file):
+    """Save results to JSON file."""
     # Convert numpy types to Python types for JSON serialization
     def convert_to_serializable(obj):
         if isinstance(obj, np.integer):
@@ -795,58 +863,54 @@ def main():
     
     with open(output_file, 'w') as f:
         json.dump(results_serializable, f, indent=2)
+
+
+def log_to_wandb(results, args, output_file):
+    """Log results to Weights & Biases."""
+    # Log summary metrics
+    wandb.log({
+        "eval/mAP_avg": results['mAP_avg'],
+        **{f"eval/mAP@{t}": results[f'mAP@{t}'] for t in args.iou_thresholds},
+        "eval/num_images": results['num_images'],
+        "eval/num_predictions": results['num_predictions'],
+        "eval/num_ground_truths": results['num_ground_truths']
+    })
     
-    print(f"\n✓ Results saved to: {output_file}")
-    
-    # Log to W&B
-    if args.wandb:
-        # Log summary metrics
-        wandb.log({
-            "eval/mAP_avg": results['mAP_avg'],
-            **{f"eval/mAP@{t}": results[f'mAP@{t}'] for t in args.iou_thresholds},
-            "eval/num_images": results['num_images'],
-            "eval/num_predictions": results['num_predictions'],
-            "eval/num_ground_truths": results['num_ground_truths']
-        })
-        
-        # Log per-class metrics
-        for iou_thresh in args.iou_thresholds:
-            per_class = results[f'per_class_AP@{iou_thresh}']
-            for class_name, metrics in per_class.items():
-                wandb.log({
-                    f"eval/{class_name}/AP@{iou_thresh}": metrics['ap'],
-                    f"eval/{class_name}/num_gt": metrics['num_gt'],
-                    f"eval/{class_name}/num_pred": metrics['num_pred'],
-                    f"eval/{class_name}/tp": metrics.get('tp', 0),
-                    f"eval/{class_name}/fp": metrics.get('fp', 0)
-                })
-        
-        # Log latency if available
-        if 'latency' in results:
+    # Log per-class metrics
+    for iou_thresh in args.iou_thresholds:
+        per_class = results[f'per_class_AP@{iou_thresh}']
+        for class_name, metrics in per_class.items():
             wandb.log({
-                "eval/latency_mean_ms": results['latency']['mean_ms'],
-                "eval/latency_std_ms": results['latency']['std_ms'],
-                "eval/fps": results['latency']['fps']
+                f"eval/{class_name}/AP@{iou_thresh}": metrics['ap'],
+                f"eval/{class_name}/num_gt": metrics['num_gt'],
+                f"eval/{class_name}/num_pred": metrics['num_pred'],
+                f"eval/{class_name}/tp": metrics['true_positives'],
+                f"eval/{class_name}/fp": metrics['false_positives']
             })
-        
-        # Log energy if available
-        if 'energy' in results:
-            if 'flops_per_image' in results['energy']:
-                wandb.log({"eval/flops_per_image": results['energy']['flops_per_image']})
-            if 'spikes_per_image' in results['energy']:
-                wandb.log({"eval/spikes_per_image": results['energy']['spikes_per_image']})
-        
-        # Upload results JSON as artifact
-        artifact = wandb.Artifact(
-            name=f"eval_results_{args.model_type}_{args.test_split.replace('/', '_')}",
-            type="evaluation",
-            description=f"Evaluation results for {args.model_type} on {args.test_split}"
-        )
-        artifact.add_file(output_file)
-        wandb.log_artifact(artifact)
-        
-        wandb.finish()
-        print("✓ Results logged to W&B")
+    
+    # Log latency if available
+    if 'latency' in results:
+        wandb.log({
+            "eval/latency_mean_ms": results['latency']['mean_ms'],
+            "eval/latency_std_ms": results['latency']['std_ms'],
+            "eval/fps": results['latency']['fps']
+        })
+    
+    # Log energy if available
+    if 'energy' in results:
+        if 'flops_per_image' in results['energy']:
+            wandb.log({"eval/flops_per_image": results['energy']['flops_per_image']})
+        if 'spikes_per_image' in results['energy']:
+            wandb.log({"eval/spikes_per_image": results['energy']['spikes_per_image']})
+    
+    # Upload results JSON as artifact
+    artifact = wandb.Artifact(
+        name=f"eval_results_{args.model_type}_{args.test_split.replace('/', '_')}",
+        type="evaluation",
+        description=f"Evaluation results for {args.model_type} on {args.test_split}"
+    )
+    artifact.add_file(output_file)
+    wandb.log_artifact(artifact)
 
 
 if __name__ == "__main__":
