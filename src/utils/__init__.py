@@ -14,9 +14,13 @@ from .boxes import (
 
 from .anchors import (
     generate_anchors,
+    generate_anchors_for_model,
+    calculate_feature_map_sizes,
     get_num_anchors_per_cell,
     DEFAULT_ANCHOR_CONFIG,
-    DEFAULT_FEAT_SIZES
+    DEFAULT_FEAT_SIZES,
+    DEFAULT_FEAT_SIZES_RGB,
+    DEFAULT_FEAT_SIZES_EB
 )
 
 from .losses import SSDLoss
@@ -34,9 +38,13 @@ __all__ = [
     'match_anchors_to_targets',
     # Anchor utilities
     'generate_anchors',
+    'generate_anchors_for_model',
+    'calculate_feature_map_sizes',
     'get_num_anchors_per_cell',
     'DEFAULT_ANCHOR_CONFIG',
     'DEFAULT_FEAT_SIZES',
+    'DEFAULT_FEAT_SIZES_RGB',
+    'DEFAULT_FEAT_SIZES_EB',
     # Loss
     'SSDLoss',
     # Detection

@@ -17,7 +17,7 @@ from typing import Tuple
 
 from src.data.dataset import TUMTrafSSD_SNN
 from src.models.snn import VGG11_SSD_SNN
-from src.utils import SSDLoss, match_anchors_to_targets, generate_anchors
+from src.utils import SSDLoss, match_anchors_to_targets, generate_anchors_for_model
 
 
 # Global anchors (generated once at start)
@@ -260,12 +260,6 @@ def main():
             print("⚠ W&B not installed. Run: pip install wandb")
             args.wandb = False
     
-    # Generate default anchors ONCE
-    global ANCHORS
-    ANCHORS = generate_anchors().to(device)
-    num_anchors = ANCHORS.size(0)
-    print(f"Generated {num_anchors} default anchors")
-    
     # Event image transforms (different from RGB)
     # Event frames typically don't need ImageNet normalization
     transform = transforms.Compose([
@@ -328,6 +322,18 @@ def main():
     print(f"Model: VGG11_SSD_SNN")
     print(f"Parameters: {num_params:,}")
     print(f"SNN Config: beta={args.beta}, threshold={args.threshold}, surrogate_slope={args.surrogate_slope}")
+    
+    # Generate anchors dynamically based on actual model feature maps
+    # This ensures anchors match the model's output dimensions for event images (442x482)
+    global ANCHORS
+    input_channels = 2  # Event frames have 2 channels (pos/neg polarity)
+    ANCHORS = generate_anchors_for_model(
+        model,
+        (input_channels, args.input_height, args.input_width),
+        device
+    )
+    num_anchors = ANCHORS.size(0)
+    print(f"Generated {num_anchors} anchors for event images ({args.input_height}x{args.input_width})")
     
     # Loss function
     criterion = SSDLoss(num_classes=args.num_classes + 1)  # +1 for background

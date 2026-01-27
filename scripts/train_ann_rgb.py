@@ -17,7 +17,7 @@ from typing import Tuple
 
 from src.data.dataset import TUMTrafSSD_ANN
 from src.models.ann import VGG11_SSD_ANN
-from src.utils import SSDLoss, match_anchors_to_targets, generate_anchors
+from src.utils import SSDLoss, match_anchors_to_targets, generate_anchors_for_model
 
 
 # Global anchors (generated once at start)
@@ -206,12 +206,6 @@ def main():
             print("⚠ W&B not installed. Run: pip install wandb")
             args.wandb = False
     
-    # Generate default anchors ONCE
-    global ANCHORS
-    ANCHORS = generate_anchors().to(device)
-    num_anchors = ANCHORS.size(0)
-    print(f"Generated {num_anchors} default anchors")
-    
     # Image transforms
     transform = transforms.Compose([
         transforms.ConvertImageDtype(torch.float32),
@@ -266,6 +260,18 @@ def main():
     num_params = sum(p.numel() for p in model.parameters())
     print(f"Model: VGG11_SSD_ANN")
     print(f"Parameters: {num_params:,}")
+    
+    # Generate anchors dynamically based on actual model feature maps
+    # This ensures anchors match the model's output dimensions for RGB images (480x640)
+    global ANCHORS
+    input_channels = 3  # RGB
+    ANCHORS = generate_anchors_for_model(
+        model, 
+        (input_channels, args.input_height, args.input_width),
+        device
+    )
+    num_anchors = ANCHORS.size(0)
+    print(f"Generated {num_anchors} anchors for RGB images ({args.input_height}x{args.input_width})")
     
     # Loss function
     criterion = SSDLoss(num_classes=args.num_classes + 1)  # +1 for background
