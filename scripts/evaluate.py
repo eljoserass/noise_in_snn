@@ -691,12 +691,19 @@ def main():
             )
             print(f"✓ W&B logging enabled: {wandb.run.url}")
     
-    # Generate anchors
-    anchors = generate_anchors().to(device)
-    print(f"Generated {anchors.size(0)} default anchors")
-    
-    # Load model
+    # Load model first (needed to generate matching anchors)
     model = load_model(args, device)
+    
+    # Generate anchors dynamically to match model's feature maps
+    # This ensures anchors match the dimensions from training
+    from src.utils import generate_anchors_for_model
+    if args.model_type == "ann":
+        input_shape = (3, 480, 640)  # RGB images
+    else:  # snn
+        input_shape = (2, 442, 482)  # Event images
+    
+    anchors = generate_anchors_for_model(model, input_shape, device)
+    print(f"Generated {anchors.size(0)} anchors matching model output")
     
     # Create dataloader
     print(f"\nLoading test data from: {args.data_path}/{args.test_split}")
