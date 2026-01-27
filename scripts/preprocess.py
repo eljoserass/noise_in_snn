@@ -20,7 +20,7 @@ def parse_args():
     parser.add_argument("--eb_roi_path", type=str, default="data/TUMTraf_Event_Dataset/calibration/intrinsic/eb_8mm_roi.txt", help="Path to EB ROI JSON file.")
     parser.add_argument("--n_frames", type=int, default=8, help="Number of frames per video group.")
     parser.add_argument("--max_time_diff", type=int, default=1000, help="Maximum time difference (ms) between frames in a group.")
-    return parser.parse_args()
+    return parser.parse_args().parse_known_args()[0]
 
 
 
