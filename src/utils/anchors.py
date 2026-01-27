@@ -11,13 +11,17 @@ from typing import List, Tuple, Optional
 
 # Default anchor configurations per feature map
 # (aspect_ratios, scales)
-# For TUMTraf dataset: cars (wide), pedestrians (tall), trucks/buses (large)
+# TUNED for TUMTraf dataset based on object size analysis:
+# - 90% of objects < 0.120 scale
+# - Bicycles avg: 0.028×0.056, Pedestrians: 0.018×0.059
+# - Cars avg: 0.056×0.063, Trucks: 0.099×0.089
+# Balanced configuration optimized for small object detection
 DEFAULT_ANCHOR_CONFIG = [
-    ([1, 2, 0.5], 0.1),           # feat1: small objects
-    ([1, 2, 0.5, 3, 1/3], 0.2),   # feat2: medium objects  
-    ([1, 2, 0.5, 3, 1/3], 0.375), # feat3: larger objects
-    ([1, 2, 0.5, 3, 1/3], 0.55),  # feat4: large vehicles
-    ([1, 2, 0.5], 0.725),         # feat5: very large objects
+    ([1, 2, 0.5], 0.06),          # feat1: very small objects (bicycles, distant cars)
+    ([1, 2, 0.5, 3, 1/3], 0.10),  # feat2: small objects (pedestrians, close bicycles)
+    ([1, 2, 0.5, 3, 1/3], 0.18),  # feat3: medium objects (cars, close pedestrians)
+    ([1, 2, 0.5, 3, 1/3], 0.30),  # feat4: larger vehicles (trucks, buses)
+    ([1, 2, 0.5], 0.50),          # feat5: very large objects (close buses/trucks)
 ]
 
 # Feature map sizes - DEPRECATED: Now calculated dynamically from model
