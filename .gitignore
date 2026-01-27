@@ -5,3 +5,5 @@ TUMTraf_Event_Dataset*
 preprocessed/
 videos/
 notes/
+wandb/
+results/

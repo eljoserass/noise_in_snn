@@ -226,7 +226,9 @@ class DetectionEvaluator:
                 per_class_metrics[self.class_names[class_id - 1]] = {
                     'ap': 0.0,
                     'num_gt': 0,
-                    'num_pred': sum(len(p['boxes']) for p in class_preds)
+                    'num_pred': sum(len(p['boxes']) for p in class_preds),
+                    'tp': 0,
+                    'fp': sum(len(p['boxes']) for p in class_preds)
                 }
                 continue
             
@@ -245,7 +247,9 @@ class DetectionEvaluator:
                 per_class_metrics[self.class_names[class_id - 1]] = {
                     'ap': 0.0,
                     'num_gt': sum(len(gt['boxes']) for gt in class_gts),
-                    'num_pred': 0
+                    'num_pred': 0,
+                    'tp': 0,
+                    'fp': 0
                 }
                 continue
             

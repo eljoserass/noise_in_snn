@@ -6,3 +6,5 @@ opencv-python
 tqdm
 norse
 pytest
+wandb
+weave
