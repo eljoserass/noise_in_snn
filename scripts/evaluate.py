@@ -847,7 +847,7 @@ def print_evaluation_results(args, test_split, results):
         for class_name, metrics in per_class.items():
             print(f"  {class_name:12s}: AP={metrics['ap']:.4f}  "
                   f"(GT={metrics['num_gt']:4d}, Pred={metrics['num_pred']:4d}, "
-                  f"TP={metrics['true_positives']:4d}, FP={metrics['false_positives']:4d})")
+                  f"TP={metrics['tp']:4d}, FP={metrics['fp']:4d})")
     
     if 'latency' in results:
         print(f"\n{'Latency':=^60}")
@@ -907,8 +907,8 @@ def log_to_wandb(results, args, output_file):
                 f"eval/{class_name}/AP@{iou_thresh}": metrics['ap'],
                 f"eval/{class_name}/num_gt": metrics['num_gt'],
                 f"eval/{class_name}/num_pred": metrics['num_pred'],
-                f"eval/{class_name}/tp": metrics['true_positives'],
-                f"eval/{class_name}/fp": metrics['false_positives']
+                f"eval/{class_name}/tp": metrics['tp'],
+                f"eval/{class_name}/fp": metrics['fp']
             })
     
     # Log latency if available
