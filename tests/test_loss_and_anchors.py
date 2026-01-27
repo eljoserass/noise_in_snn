@@ -6,6 +6,7 @@ These tests validate:
 2. Anchor matching to ground truth boxes
 3. Loss computation with proper shapes
 4. Background vs foreground anchor assignment
+5. CRITICAL: Model output shapes match generated anchors
 """
 
 import pytest
@@ -17,11 +18,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils import (
     generate_anchors,
+    generate_anchors_for_model,
     match_anchors_to_targets,
     SSDLoss,
     DEFAULT_FEAT_SIZES,
+    DEFAULT_FEAT_SIZES_RGB,
+    DEFAULT_FEAT_SIZES_EB,
     get_num_anchors_per_cell
 )
+from src.models.ann import VGG11_SSD_ANN
+from src.models.snn import VGG11_SSD_SNN
 
 
 class TestAnchorGeneration:
@@ -179,6 +185,167 @@ class TestAnchorMatching:
         assert (positive_labels == 3).all(), "Positive anchors should have correct label"
         
         print(f"\n✓ {positive_mask.sum().item()} anchors correctly labeled as class 3")
+
+
+class TestModelAnchorCompatibility:
+    """
+    CRITICAL TEST: Verify anchors match actual model output dimensions.
+    This test would have caught the original bug where RGB images (480x640)
+    produced 30,320 anchors but DEFAULT_FEAT_SIZES only generated 20,568.
+    """
+    
+    @pytest.fixture
+    def device(self):
+        """Get available device"""
+        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    def test_ann_rgb_anchor_match(self, device):
+        """
+        Test: ANN model with RGB images produces same number of anchors.
+        RGB images are 480x640 in TUMTraf dataset.
+        """
+        model = VGG11_SSD_ANN(num_classes=7).to(device)
+        
+        # Simulate RGB batch
+        batch_size = 2
+        rgb_input = torch.randn(batch_size, 3, 480, 640).to(device)
+        
+        # Get model predictions
+        cls_preds, loc_preds = model(rgb_input)
+        num_anchors_from_model = cls_preds.size(1)
+        
+        # Generate anchors dynamically
+        anchors = generate_anchors_for_model(model, (3, 480, 640), device)
+        num_generated_anchors = anchors.size(0)
+        
+        # CRITICAL: These must match!
+        assert num_anchors_from_model == num_generated_anchors, \
+            f"Model outputs {num_anchors_from_model} predictions but generated {num_generated_anchors} anchors!"
+        
+        # Verify shapes for loss computation
+        assert cls_preds.shape == (batch_size, num_generated_anchors, 7), \
+            f"Classification predictions shape mismatch: {cls_preds.shape}"
+        assert loc_preds.shape == (batch_size, num_generated_anchors, 4), \
+            f"Localization predictions shape mismatch: {loc_preds.shape}"
+        
+        print(f"\n✓ ANN RGB: Model and anchors match ({num_generated_anchors} anchors)")
+    
+    def test_snn_event_anchor_match(self, device):
+        """
+        Test: SNN model with event images produces same number of anchors.
+        Event images are 442x482 in TUMTraf dataset.
+        """
+        from snntorch import surrogate
+        
+        model = VGG11_SSD_SNN(
+            num_classes=7,
+            beta=0.9,
+            threshold=1.0,
+            spike_grad=surrogate.fast_sigmoid(slope=25.0)
+        ).to(device)
+        
+        # Simulate event batch (2 channels for polarity)
+        batch_size = 1  # SNNs typically use batch_size=1
+        event_input = torch.randn(batch_size, 2, 442, 482).to(device)
+        
+        # Get model predictions
+        cls_preds, loc_preds = model(event_input)
+        num_anchors_from_model = cls_preds.size(1)
+        
+        # Generate anchors dynamically
+        anchors = generate_anchors_for_model(model, (2, 442, 482), device)
+        num_generated_anchors = anchors.size(0)
+        
+        # CRITICAL: These must match!
+        assert num_anchors_from_model == num_generated_anchors, \
+            f"Model outputs {num_anchors_from_model} predictions but generated {num_generated_anchors} anchors!"
+        
+        # Verify shapes for loss computation
+        assert cls_preds.shape == (batch_size, num_generated_anchors, 7), \
+            f"Classification predictions shape mismatch: {cls_preds.shape}"
+        assert loc_preds.shape == (batch_size, num_generated_anchors, 4), \
+            f"Localization predictions shape mismatch: {loc_preds.shape}"
+        
+        print(f"\n✓ SNN Event: Model and anchors match ({num_generated_anchors} anchors)")
+    
+    def test_static_vs_dynamic_mismatch(self, device):
+        """
+        Test: Demonstrate why static DEFAULT_FEAT_SIZES fails for RGB.
+        This test explicitly shows the bug that caused training to crash.
+        """
+        model = VGG11_SSD_ANN(num_classes=7).to(device)
+        rgb_input = torch.randn(1, 3, 480, 640).to(device)
+        
+        # Get actual model output
+        cls_preds, _ = model(rgb_input)
+        actual_anchors = cls_preds.size(1)
+        
+        # Static anchors (old way - WRONG for RGB!)
+        static_anchors_eb = generate_anchors(feat_sizes=DEFAULT_FEAT_SIZES_EB)
+        static_anchors_rgb = generate_anchors(feat_sizes=DEFAULT_FEAT_SIZES_RGB)
+        
+        # Dynamic anchors (new way - CORRECT!)
+        dynamic_anchors = generate_anchors_for_model(model, (3, 480, 640), device)
+        
+        print(f"\n[RGB 480x640] Anchor comparison:")
+        print(f"  Static EB anchors: {static_anchors_eb.size(0)} ❌ (for 442x482 images)")
+        print(f"  Static RGB anchors: {static_anchors_rgb.size(0)} ✓ (hardcoded for 480x640)")
+        print(f"  Model actual output: {actual_anchors}")
+        print(f"  Dynamic anchors: {dynamic_anchors.size(0)} ✓ (calculated from model)")
+        
+        # The bug: Using EB anchors for RGB images
+        if actual_anchors != static_anchors_eb.size(0):
+            print(f"\n⚠ OLD BUG DETECTED: {actual_anchors} != {static_anchors_eb.size(0)}")
+            print(f"  This caused: 'IndexError: shape mismatch at index 1'")
+        
+        # Dynamic should always match
+        assert actual_anchors == dynamic_anchors.size(0), \
+            "Dynamic anchor generation failed to match model output!"
+        
+        print(f"\n✓ Dynamic generation correctly adapts to model architecture")
+    
+    def test_loss_with_real_model_shapes(self, device):
+        """
+        Test: End-to-end loss computation with real model output shapes.
+        This simulates the actual training loop.
+        """
+        model = VGG11_SSD_ANN(num_classes=7).to(device)
+        criterion = SSDLoss(num_classes=7)
+        
+        # Generate anchors
+        anchors = generate_anchors_for_model(model, (3, 480, 640), device)
+        
+        # Simulate batch
+        batch_size = 2
+        images = torch.randn(batch_size, 3, 480, 640).to(device)
+        
+        # Forward pass
+        cls_preds, loc_preds = model(images)
+        
+        # Create dummy targets (simulating match_anchors_to_targets output)
+        num_anchors = anchors.size(0)
+        cls_targets = torch.zeros(batch_size, num_anchors, dtype=torch.long).to(device)
+        loc_targets = torch.zeros(batch_size, num_anchors, 4).to(device)
+        
+        # Add some positive samples
+        for b in range(batch_size):
+            positive_indices = torch.randint(0, num_anchors, (10,))
+            cls_targets[b, positive_indices] = torch.randint(1, 7, (10,)).to(device)
+            loc_targets[b, positive_indices] = torch.randn(10, 4).to(device) * 0.1
+        
+        # Compute loss (this is where the bug occurred)
+        try:
+            loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_targets, loc_targets)
+            
+            assert torch.isfinite(loss), "Loss should be finite"
+            assert cls_loss >= 0, "Classification loss should be non-negative"
+            assert loc_loss >= 0, "Localization loss should be non-negative"
+            
+            print(f"\n✓ End-to-end loss computation successful")
+            print(f"  Loss: {loss.item():.4f} (cls: {cls_loss.item():.4f}, loc: {loc_loss.item():.4f})")
+        except IndexError as e:
+            pytest.fail(f"Loss computation failed with IndexError: {e}\n"
+                       f"This indicates anchor/model shape mismatch!")
 
 
 class TestSSDLoss:

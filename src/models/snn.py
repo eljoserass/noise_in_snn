@@ -116,7 +116,7 @@ class VGG11_SSD_SNN(nn.Module):
             classifications: Class predictions (batch, num_anchors, num_classes)
             regressions: Location predictions (batch, num_anchors, 4)
         """
-        # x: [B, 2, 300, 300] - event frame at time t
+        # x: [B, 2, 442, 482] - event frame at time t (TUMTraf events)
         
         # Block 1
         cur = self.conv1(x)
@@ -133,32 +133,32 @@ class VGG11_SSD_SNN(nn.Module):
         spk = self.lif3_1(cur)
         cur = self.conv3_2(spk)
         spk = self.lif3_2(cur)
-        feat1 = self.pool3(spk)  # [B, 256, 38, 38]
+        feat1 = self.pool3(spk)  # [B, 256, 55, 60] for 442×482 input
         
         # Block 4
         cur = self.conv4_1(feat1)
         spk = self.lif4_1(cur)
         cur = self.conv4_2(spk)
         spk = self.lif4_2(cur)
-        feat2 = self.pool4(spk)  # [B, 512, 19, 19]
+        feat2 = self.pool4(spk)  # [B, 512, 27, 30] for 442×482 input
         
         # Block 5
         cur = self.conv5_1(feat2)
         spk = self.lif5_1(cur)
         cur = self.conv5_2(spk)
         spk = self.lif5_2(cur)
-        feat3 = self.pool5(spk)  # [B, 512, 10, 10]
+        feat3 = self.pool5(spk)  # [B, 512, 13, 15] for 442×482 input
         
         # Extra layers
         cur = self.conv6(feat3)
         spk = self.lif6(cur)
         cur = self.conv7(spk)
-        feat4 = self.lif7(cur)  # [B, 1024, 10, 10]
+        feat4 = self.lif7(cur)  # [B, 1024, 13, 15] for 442×482 input
         
         cur = self.conv8_1(feat4)
         spk = self.lif8_1(cur)
         cur = self.conv8_2(spk)
-        feat5 = self.lif8_2(cur)  # [B, 512, 5, 5]
+        feat5 = self.lif8_2(cur)  # [B, 512, 7, 8] for 442×482 input
         
         features = [feat1, feat2, feat3, feat4, feat5]
         

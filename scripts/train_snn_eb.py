@@ -206,8 +206,8 @@ def parse_args():
     
     # Model parameters
     parser.add_argument("--num-classes", type=int, default=6, help="Number of classes")
-    parser.add_argument("--input-height", type=int, default=480, help="Input image height")
-    parser.add_argument("--input-width", type=int, default=640, help="Input image width")
+    parser.add_argument("--input-height", type=int, default=442, help="Input image height (442 for TUMTraf events after preprocessing)")
+    parser.add_argument("--input-width", type=int, default=482, help="Input image width (482 for TUMTraf events after preprocessing)")
     
     # SNN-specific parameters
     parser.add_argument("--beta", type=float, default=0.9, 
