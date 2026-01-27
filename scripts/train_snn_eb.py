@@ -224,6 +224,8 @@ def parse_args():
     parser.add_argument("--save-dir", type=str, default="checkpoints", help="Checkpoint directory")
     parser.add_argument("--save-freq", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
+    parser.add_argument("--early-stop-patience", type=int, default=15, 
+                        help="Early stopping patience (epochs without val loss improvement)")
     
     # W&B options
     parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
@@ -356,6 +358,7 @@ def main():
     # Resume from checkpoint
     start_epoch = 0
     best_val_loss = float('inf')
+    patience_counter = 0
     
     if args.resume:
         print(f"Resuming from {args.resume}")
@@ -365,10 +368,12 @@ def main():
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        patience_counter = checkpoint.get('patience_counter', 0)
     
     # Training loop
     print(f"\nStarting training for {args.epochs} epochs...")
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    print(f"Early stopping: patience={args.early_stop_patience} epochs")
     
     for epoch in range(start_epoch, args.epochs):
         # Train
@@ -401,9 +406,10 @@ def main():
                 "learning_rate": current_lr,
             })
         
-        # Save best model
+        # Save best model and early stopping check
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            patience_counter = 0  # Reset patience counter
             checkpoint_path = os.path.join(args.save_dir, 'vgg11_ssd_snn_best.pth')
             torch.save({
                 'epoch': epoch,
@@ -411,6 +417,7 @@ def main():
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
                 'best_val_loss': best_val_loss,
+                'patience_counter': patience_counter,
                 'args': vars(args)
             }, checkpoint_path)
             print(f"✓ Saved best model with val loss: {val_loss:.4f}")
@@ -418,6 +425,15 @@ def main():
             # Log best model to W&B
             if args.wandb and wandb_run:
                 wandb.save(checkpoint_path)
+        else:
+            patience_counter += 1
+            print(f"⚠ Val loss did not improve ({patience_counter}/{args.early_stop_patience})")
+            
+            # Early stopping
+            if patience_counter >= args.early_stop_patience:
+                print(f"\n⛔ Early stopping triggered! No improvement for {args.early_stop_patience} epochs.")
+                print(f"Best validation loss: {best_val_loss:.4f}")
+                break
         
         # Save checkpoint periodically
         if (epoch + 1) % args.save_freq == 0:
