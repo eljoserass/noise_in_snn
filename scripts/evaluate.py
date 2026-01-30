@@ -66,6 +66,9 @@ def parse_args():
     parser.add_argument("--beta", type=float, default=0.9, help="SNN membrane decay rate")
     parser.add_argument("--threshold", type=float, default=1.0, help="SNN spike threshold")
     parser.add_argument("--surrogate-slope", type=float, default=25.0, help="Surrogate gradient slope")
+    parser.add_argument("--timesteps-per-frame", type=int, default=10,
+                        help="Number of timesteps to repeat each frame for SNN inference (T). "
+                             "Should match training value. Default: 10")
     
     # Data paths
     parser.add_argument("--data-path", type=str, default="data/preprocessed",
@@ -461,9 +464,10 @@ def run_inference_ann(model, dataloader, anchors, device, conf_threshold, nms_th
 
 
 @torch.no_grad()
-def run_inference_snn(model, dataloader, anchors, device, conf_threshold, nms_threshold, evaluator):
+def run_snn_inference(model, dataloader, anchors, device, conf_threshold, nms_threshold, evaluator, timesteps_per_frame=10):
     """
-    Run inference on SNN model (temporal sequence processing).
+    Run inference for SNN model on event sequences.
+    Each frame is presented for timesteps_per_frame iterations to allow membrane accumulation.
     
     Args:
         model: SNN model
@@ -473,6 +477,7 @@ def run_inference_snn(model, dataloader, anchors, device, conf_threshold, nms_th
         conf_threshold: Confidence threshold
         nms_threshold: NMS threshold
         evaluator: DetectionEvaluator instance
+        timesteps_per_frame: Number of timesteps to present each frame
     """
     model.eval()
     
@@ -481,20 +486,23 @@ def run_inference_snn(model, dataloader, anchors, device, conf_threshold, nms_th
             # Reset states for new sequence
             model.reset_states()
             
-            T = seq_images.shape[0]
+            num_frames = seq_images.shape[0]
             
-            # Process sequence with temporal integration
-            for t in range(T):
-                frame = seq_images[t:t+1].to(device)  # (1, C, H, W)
-                target = seq_targets[t]
+            # Process sequence with temporal integration and frame-level repetition
+            for frame_idx in range(num_frames):
+                frame = seq_images[frame_idx:frame_idx+1].to(device)  # (1, C, H, W)
+                target = seq_targets[frame_idx]
                 
-                # Inference (state persists across timesteps!)
+                # Present this frame for T timesteps (membrane accumulation)
                 start_time = time.time()
-                cls_preds, loc_preds = model(frame)
+                for t in range(timesteps_per_frame):
+                    # Inference (state persists across timesteps!)
+                    cls_preds, loc_preds = model(frame)
+                
                 inference_time = time.time() - start_time
                 evaluator.inference_times.append(inference_time)
                 
-                # Post-process predictions
+                # Post-process predictions (use final timestep output)
                 pred_boxes, pred_scores, pred_labels = post_process_detections(
                     cls_preds[0], loc_preds[0], anchors, conf_threshold, nms_threshold, device
                 )
@@ -508,7 +516,7 @@ def run_inference_snn(model, dataloader, anchors, device, conf_threshold, nms_th
                 evaluator.add_predictions(
                     pred_boxes, pred_scores, pred_labels,
                     gt_boxes_xyxy, gt_labels,
-                    image_id=f"{batch_idx}_seq{seq_idx}_t{t}"
+                    image_id=f"{batch_idx}_seq{seq_idx}_t{frame_idx}"
                 )
 
 
@@ -792,8 +800,9 @@ def main():
             run_inference_ann(model, dataloader, anchors, device, 
                              args.conf_threshold, args.nms_threshold, evaluator)
         else:
-            run_inference_snn(model, dataloader, anchors, device,
-                             args.conf_threshold, args.nms_threshold, evaluator)
+            print(f"SNN timesteps per frame: {args.timesteps_per_frame}")
+            run_snn_inference(model, dataloader, anchors, device,
+                             args.conf_threshold, args.nms_threshold, evaluator, args.timesteps_per_frame)
         
         # Compute metrics
         print("\nComputing evaluation metrics...")

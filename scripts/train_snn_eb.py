@@ -39,10 +39,11 @@ def collate_fn_snn(batch):
 
 def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSDLoss,
                     optimizer: optim.Optimizer, device: torch.device, epoch: int,
-                    anchors: torch.Tensor) -> Tuple[float, float, float]:
+                    anchors: torch.Tensor, timesteps_per_frame: int = 10) -> Tuple[float, float, float]:
     """
     Train for one epoch with event sequences.
     SNN processes each frame in sequence with temporal integration via membrane states.
+    Each frame is repeated for timesteps_per_frame iterations to allow membrane accumulation.
     """
     model.train()
     total_loss = 0.0
@@ -66,19 +67,17 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
             model.reset_states()
             
             # Process each frame in sequence
-            T = seq_images.shape[0]
+            # Each frame is repeated timesteps_per_frame times for membrane accumulation
+            num_frames = seq_images.shape[0]
             seq_loss = 0.0
             seq_cls_loss = 0.0
             seq_loc_loss = 0.0
             
-            for t in range(T):
-                frame = seq_images[t:t+1].to(device)  # (1, C, H, W)
-                target = seq_targets[t]
+            for frame_idx in range(num_frames):
+                frame = seq_images[frame_idx:frame_idx+1].to(device)  # (1, C, H, W)
+                target = seq_targets[frame_idx]
                 
-                # Forward pass - membrane states carry over!
-                cls_preds, loc_preds = model(frame)
-                
-                # Match anchors to ground truth
+                # Match anchors to ground truth (once per frame)
                 gt_boxes = target['boxes'].to(device)
                 gt_labels = target['labels'].to(device)
                 
@@ -90,16 +89,30 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
                 cls_target = cls_target.unsqueeze(0)  # (1, num_anchors)
                 loc_target = loc_target.unsqueeze(0)  # (1, num_anchors, 4)
                 
-                # Compute loss for this frame
-                loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
-                seq_loss += loss
-                seq_cls_loss += cls_loss
-                seq_loc_loss += loc_loss
+                # Present this frame for T timesteps (membrane accumulation)
+                frame_loss = 0.0
+                frame_cls_loss = 0.0
+                frame_loc_loss = 0.0
+                
+                for t in range(timesteps_per_frame):
+                    # Forward pass - membrane states carry over across timesteps!
+                    cls_preds, loc_preds = model(frame)
+                    
+                    # Compute loss at each timestep
+                    loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
+                    frame_loss += loss
+                    frame_cls_loss += cls_loss
+                    frame_loc_loss += loc_loss
+                
+                # Average loss over timesteps for this frame
+                seq_loss += frame_loss / timesteps_per_frame
+                seq_cls_loss += frame_cls_loss / timesteps_per_frame
+                seq_loc_loss += frame_loc_loss / timesteps_per_frame
             
-            # Average loss over sequence timesteps
-            seq_loss = seq_loss / T
-            seq_cls_loss = seq_cls_loss / T
-            seq_loc_loss = seq_loc_loss / T
+            # Average loss over all frames in sequence
+            seq_loss = seq_loss / num_frames
+            seq_cls_loss = seq_cls_loss / num_frames
+            seq_loc_loss = seq_loc_loss / num_frames
             
             batch_loss += seq_loss
             batch_cls_loss += seq_cls_loss
@@ -138,8 +151,8 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
 
 @torch.no_grad()
 def validate(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSDLoss, 
-             device: torch.device, anchors: torch.Tensor) -> Tuple[float, float, float]:
-    """Validate the model on event sequences."""
+             device: torch.device, anchors: torch.Tensor, timesteps_per_frame: int = 10) -> Tuple[float, float, float]:
+    """Validate the model on event sequences with frame-level timestep repetition."""
     model.eval()
     total_loss = 0.0
     total_cls_loss = 0.0
@@ -149,16 +162,14 @@ def validate(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSDLoss,
         for seq_images, seq_targets in zip(sequences, targets_sequences):
             model.reset_states()
             
-            T = seq_images.shape[0]
+            num_frames = seq_images.shape[0]
             seq_loss = 0.0
             seq_cls_loss = 0.0
             seq_loc_loss = 0.0
             
-            for t in range(T):
-                frame = seq_images[t:t+1].to(device)
-                target = seq_targets[t]
-                
-                cls_preds, loc_preds = model(frame)
+            for frame_idx in range(num_frames):
+                frame = seq_images[frame_idx:frame_idx+1].to(device)
+                target = seq_targets[frame_idx]
                 
                 gt_boxes = target['boxes'].to(device)
                 gt_labels = target['labels'].to(device)
@@ -170,14 +181,25 @@ def validate(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSDLoss,
                 cls_target = cls_target.unsqueeze(0)
                 loc_target = loc_target.unsqueeze(0)
                 
-                loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
-                seq_loss += loss
-                seq_cls_loss += cls_loss
-                seq_loc_loss += loc_loss
+                # Present frame for T timesteps
+                frame_loss = 0.0
+                frame_cls_loss = 0.0
+                frame_loc_loss = 0.0
+                
+                for t in range(timesteps_per_frame):
+                    cls_preds, loc_preds = model(frame)
+                    loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
+                    frame_loss += loss
+                    frame_cls_loss += cls_loss
+                    frame_loc_loss += loc_loss
+                
+                seq_loss += frame_loss / timesteps_per_frame
+                seq_cls_loss += frame_cls_loss / timesteps_per_frame
+                seq_loc_loss += frame_loc_loss / timesteps_per_frame
             
-            total_loss += (seq_loss / T).item()
-            total_cls_loss += (seq_cls_loss / T).item()
-            total_loc_loss += (seq_loc_loss / T).item()
+            total_loss += (seq_loss / num_frames).item()
+            total_cls_loss += (seq_cls_loss / num_frames).item()
+            total_loc_loss += (seq_loc_loss / num_frames).item()
     
     avg_loss = total_loss / len(dataloader) if len(dataloader) > 0 else 0.0
     avg_cls_loss = total_cls_loss / len(dataloader) if len(dataloader) > 0 else 0.0
@@ -216,6 +238,10 @@ def parse_args():
                         help="Spike threshold")
     parser.add_argument("--surrogate-slope", type=float, default=25.0,
                         help="Surrogate gradient slope")
+    parser.add_argument("--timesteps-per-frame", type=int, default=10,
+                        help="Number of timesteps to repeat each frame for membrane accumulation (T). "
+                             "Literature uses T=10-50 for event-based detection. Higher T = better "
+                             "integration but slower training.")
     
     # Training options
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
@@ -324,6 +350,7 @@ def main():
     print(f"Model: VGG11_SSD_SNN")
     print(f"Parameters: {num_params:,}")
     print(f"SNN Config: beta={args.beta}, threshold={args.threshold}, surrogate_slope={args.surrogate_slope}")
+    print(f"Timesteps per frame: {args.timesteps_per_frame} (total timesteps = {args.timesteps_per_frame} × sequence_length)")
     
     # Generate anchors dynamically based on actual model feature maps
     # This ensures anchors match the model's output dimensions for event images (442x482)
@@ -378,11 +405,11 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         # Train
         train_loss, train_cls_loss, train_loc_loss = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch, ANCHORS
+            model, train_loader, criterion, optimizer, device, epoch, ANCHORS, args.timesteps_per_frame
         )
         
         # Validate
-        val_loss, val_cls_loss, val_loc_loss = validate(model, val_loader, criterion, device, ANCHORS)
+        val_loss, val_cls_loss, val_loc_loss = validate(model, val_loader, criterion, device, ANCHORS, args.timesteps_per_frame)
         
         # Update scheduler
         scheduler.step()
