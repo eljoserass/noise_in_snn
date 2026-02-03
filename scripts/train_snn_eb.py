@@ -90,11 +90,9 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
                 loc_target = loc_target.unsqueeze(0)  # (1, num_anchors, 4)
                 
                 # Present this frame for T timesteps (membrane accumulation)
-                # Accumulate loss VALUES (scalars) to avoid keeping gradient graphs
                 frame_loss_value = 0.0
                 frame_cls_loss_value = 0.0
                 frame_loc_loss_value = 0.0
-                last_loss = None  # Keep only last loss tensor for backward
                 
                 for t in range(timesteps_per_frame):
                     # Forward pass - membrane states carry over across timesteps!
@@ -103,26 +101,24 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
                     # Compute loss at each timestep
                     loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
                     
-                    # Accumulate loss values (not tensors!) for logging
+                    # Accumulate loss values for logging
                     frame_loss_value += loss.item()
                     frame_cls_loss_value += cls_loss.item()
                     frame_loc_loss_value += loc_loss.item()
                     
-                    # Keep last loss for backward (only 1 graph in memory)
-                    last_loss = loss
-                
-                # Backward on the last timestep loss (surrogate gradients flow through time)
-                # Scale by 1/num_frames for gradient accumulation across frames
-                frame_loss_scaled = last_loss / num_frames
-                
-                # Retain graph for all frames except the last (membrane states carry across frames)
-                is_last_frame = (frame_idx == num_frames - 1)
-                frame_loss_scaled.backward(retain_graph=(not is_last_frame))
+                    # Keep only last timestep of last frame for backward
+                    is_last_frame = (frame_idx == num_frames - 1)
+                    is_last_timestep = (t == timesteps_per_frame - 1)
+                    if is_last_frame and is_last_timestep:
+                        final_loss = loss
                 
                 # Accumulate average loss values for logging
                 batch_loss_value += frame_loss_value / timesteps_per_frame / num_frames
                 batch_cls_loss_value += frame_cls_loss_value / timesteps_per_frame / num_frames
                 batch_loc_loss_value += frame_loc_loss_value / timesteps_per_frame / num_frames
+            
+            # Backward once per sequence on final timestep (gradients flow through membrane states)
+            final_loss.backward()
         
         # Average over batch (usually batch_size=1 for sequences)
         batch_loss_value = batch_loss_value / len(sequences)
