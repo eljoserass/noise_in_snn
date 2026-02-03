@@ -106,19 +106,29 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
                     frame_cls_loss_value += cls_loss.item()
                     frame_loc_loss_value += loc_loss.item()
                     
-                    # Keep only last timestep of last frame for backward
-                    is_last_frame = (frame_idx == num_frames - 1)
-                    is_last_timestep = (t == timesteps_per_frame - 1)
-                    if is_last_frame and is_last_timestep:
-                        final_loss = loss
+                    # Keep last timestep loss for backward
+                    if t == timesteps_per_frame - 1:
+                        frame_loss = loss
+                
+                # Backward per frame (truncated BPTT - limits to timesteps_per_frame)
+                # Scale by num_frames for proper gradient averaging
+                (frame_loss / num_frames).backward()
+                
+                # Explicitly clear loss tensor to free memory
+                del frame_loss, loss, cls_loss, loc_loss, cls_preds, loc_preds
+                
+                # Detach membrane states to break computation graph between frames
+                # This limits memory to one frame's timesteps instead of entire sequence
+                model.detach_states()
+                
+                # Clear CUDA cache periodically to avoid fragmentation
+                if frame_idx % 4 == 0:
+                    torch.cuda.empty_cache()
                 
                 # Accumulate average loss values for logging
                 batch_loss_value += frame_loss_value / timesteps_per_frame / num_frames
                 batch_cls_loss_value += frame_cls_loss_value / timesteps_per_frame / num_frames
                 batch_loc_loss_value += frame_loc_loss_value / timesteps_per_frame / num_frames
-            
-            # Backward once per sequence on final timestep (gradients flow through membrane states)
-            final_loss.backward()
         
         # Average over batch (usually batch_size=1 for sequences)
         batch_loss_value = batch_loss_value / len(sequences)

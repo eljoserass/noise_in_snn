@@ -195,3 +195,14 @@ class VGG11_SSD_SNN(nn.Module):
         for module in self.modules():
             if isinstance(module, snn.Leaky):
                 module.reset_mem()
+    
+    def detach_states(self):
+        """
+        Detach membrane states from computation graph (truncated BPTT).
+        Call this to limit backprop through time when processing long sequences.
+        Membrane values are preserved but gradient flow is cut.
+        """
+        for module in self.modules():
+            if isinstance(module, snn.Leaky):
+                if hasattr(module, 'mem') and module.mem is not None:
+                    module.mem = module.mem.detach()
