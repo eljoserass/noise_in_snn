@@ -55,9 +55,12 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
         # sequences: list of (T, C, H, W) tensors
         # targets_sequences: list of lists of target dicts
         
-        batch_loss = 0.0
-        batch_cls_loss = 0.0
-        batch_loc_loss = 0.0
+        batch_loss_value = 0.0
+        batch_cls_loss_value = 0.0
+        batch_loc_loss_value = 0.0
+        
+        # Zero gradients once per batch
+        optimizer.zero_grad()
         
         for seq_images, seq_targets in zip(sequences, targets_sequences):
             # seq_images: (T, C, H, W) - one sequence
@@ -69,9 +72,6 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
             # Process each frame in sequence
             # Each frame is repeated timesteps_per_frame times for membrane accumulation
             num_frames = seq_images.shape[0]
-            seq_loss = 0.0
-            seq_cls_loss = 0.0
-            seq_loc_loss = 0.0
             
             for frame_idx in range(num_frames):
                 frame = seq_images[frame_idx:frame_idx+1].to(device)  # (1, C, H, W)
@@ -90,9 +90,11 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
                 loc_target = loc_target.unsqueeze(0)  # (1, num_anchors, 4)
                 
                 # Present this frame for T timesteps (membrane accumulation)
-                frame_loss = 0.0
-                frame_cls_loss = 0.0
-                frame_loc_loss = 0.0
+                # Accumulate loss VALUES (scalars) to avoid keeping gradient graphs
+                frame_loss_value = 0.0
+                frame_cls_loss_value = 0.0
+                frame_loc_loss_value = 0.0
+                last_loss = None  # Keep only last loss tensor for backward
                 
                 for t in range(timesteps_per_frame):
                     # Forward pass - membrane states carry over across timesteps!
@@ -100,46 +102,44 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
                     
                     # Compute loss at each timestep
                     loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
-                    frame_loss += loss
-                    frame_cls_loss += cls_loss
-                    frame_loc_loss += loc_loss
+                    
+                    # Accumulate loss values (not tensors!) for logging
+                    frame_loss_value += loss.item()
+                    frame_cls_loss_value += cls_loss.item()
+                    frame_loc_loss_value += loc_loss.item()
+                    
+                    # Keep last loss for backward (only 1 graph in memory)
+                    last_loss = loss
                 
-                # Average loss over timesteps for this frame
-                seq_loss += frame_loss / timesteps_per_frame
-                seq_cls_loss += frame_cls_loss / timesteps_per_frame
-                seq_loc_loss += frame_loc_loss / timesteps_per_frame
-            
-            # Average loss over all frames in sequence
-            seq_loss = seq_loss / num_frames
-            seq_cls_loss = seq_cls_loss / num_frames
-            seq_loc_loss = seq_loc_loss / num_frames
-            
-            batch_loss += seq_loss
-            batch_cls_loss += seq_cls_loss
-            batch_loc_loss += seq_loc_loss
+                # Backward on the last timestep loss (surrogate gradients flow through time)
+                # Scale by 1/num_frames for gradient accumulation across frames
+                frame_loss_scaled = last_loss / num_frames
+                frame_loss_scaled.backward()
+                
+                # Accumulate average loss values for logging
+                batch_loss_value += frame_loss_value / timesteps_per_frame / num_frames
+                batch_cls_loss_value += frame_cls_loss_value / timesteps_per_frame / num_frames
+                batch_loc_loss_value += frame_loc_loss_value / timesteps_per_frame / num_frames
         
         # Average over batch (usually batch_size=1 for sequences)
-        batch_loss = batch_loss / len(sequences)
-        batch_cls_loss = batch_cls_loss / len(sequences)
-        batch_loc_loss = batch_loc_loss / len(sequences)
+        batch_loss_value = batch_loss_value / len(sequences)
+        batch_cls_loss_value = batch_cls_loss_value / len(sequences)
+        batch_loc_loss_value = batch_loc_loss_value / len(sequences)
         
-        # Backward pass after processing sequence(s)
-        optimizer.zero_grad()
-        batch_loss.backward()  # Surrogate gradient applied automatically!
-        
-        # Gradient clipping
+        # Gradient clipping (gradients already accumulated from all frames)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
         
+        # Update weights once per batch
         optimizer.step()
         
-        total_loss += batch_loss.item()
-        total_cls_loss += batch_cls_loss.item()
-        total_loc_loss += batch_loc_loss.item()
+        total_loss += batch_loss_value
+        total_cls_loss += batch_cls_loss_value
+        total_loc_loss += batch_loc_loss_value
         
         pbar.set_postfix({
-            'loss': f'{batch_loss.item():.4f}',
-            'cls': f'{batch_cls_loss.item():.4f}',
-            'loc': f'{batch_loc_loss.item():.4f}'
+            'loss': f'{batch_loss_value:.4f}',
+            'cls': f'{batch_cls_loss_value:.4f}',
+            'loc': f'{batch_loc_loss_value:.4f}'
         })
     
     avg_loss = total_loss / len(dataloader) if len(dataloader) > 0 else 0.0
@@ -163,9 +163,9 @@ def validate(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSDLoss,
             model.reset_states()
             
             num_frames = seq_images.shape[0]
-            seq_loss = 0.0
-            seq_cls_loss = 0.0
-            seq_loc_loss = 0.0
+            seq_loss_value = 0.0
+            seq_cls_loss_value = 0.0
+            seq_loc_loss_value = 0.0
             
             for frame_idx in range(num_frames):
                 frame = seq_images[frame_idx:frame_idx+1].to(device)
@@ -182,24 +182,26 @@ def validate(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSDLoss,
                 loc_target = loc_target.unsqueeze(0)
                 
                 # Present frame for T timesteps
-                frame_loss = 0.0
-                frame_cls_loss = 0.0
-                frame_loc_loss = 0.0
+                # Accumulate loss VALUES only (no gradient graphs in validation)
+                frame_loss_value = 0.0
+                frame_cls_loss_value = 0.0
+                frame_loc_loss_value = 0.0
                 
                 for t in range(timesteps_per_frame):
                     cls_preds, loc_preds = model(frame)
                     loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
-                    frame_loss += loss
-                    frame_cls_loss += cls_loss
-                    frame_loc_loss += loc_loss
+                    # Accumulate scalar values only
+                    frame_loss_value += loss.item()
+                    frame_cls_loss_value += cls_loss.item()
+                    frame_loc_loss_value += loc_loss.item()
                 
-                seq_loss += frame_loss / timesteps_per_frame
-                seq_cls_loss += frame_cls_loss / timesteps_per_frame
-                seq_loc_loss += frame_loc_loss / timesteps_per_frame
+                seq_loss_value += frame_loss_value / timesteps_per_frame
+                seq_cls_loss_value += frame_cls_loss_value / timesteps_per_frame
+                seq_loc_loss_value += frame_loc_loss_value / timesteps_per_frame
             
-            total_loss += (seq_loss / num_frames).item()
-            total_cls_loss += (seq_cls_loss / num_frames).item()
-            total_loc_loss += (seq_loc_loss / num_frames).item()
+            total_loss += seq_loss_value / num_frames
+            total_cls_loss += seq_cls_loss_value / num_frames
+            total_loc_loss += seq_loc_loss_value / num_frames
     
     avg_loss = total_loss / len(dataloader) if len(dataloader) > 0 else 0.0
     avg_cls_loss = total_cls_loss / len(dataloader) if len(dataloader) > 0 else 0.0
