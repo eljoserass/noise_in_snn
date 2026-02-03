@@ -114,7 +114,10 @@ def train_one_epoch(model: VGG11_SSD_SNN, dataloader: DataLoader, criterion: SSD
                 # Backward on the last timestep loss (surrogate gradients flow through time)
                 # Scale by 1/num_frames for gradient accumulation across frames
                 frame_loss_scaled = last_loss / num_frames
-                frame_loss_scaled.backward()
+                
+                # Retain graph for all frames except the last (membrane states carry across frames)
+                is_last_frame = (frame_idx == num_frames - 1)
+                frame_loss_scaled.backward(retain_graph=(not is_last_frame))
                 
                 # Accumulate average loss values for logging
                 batch_loss_value += frame_loss_value / timesteps_per_frame / num_frames
