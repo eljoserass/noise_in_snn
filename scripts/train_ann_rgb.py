@@ -209,6 +209,7 @@ def main():
             args.wandb = False
     
     # Image transforms
+    # What this transform do over here?
     transform = transforms.Compose([
         transforms.ConvertImageDtype(torch.float32),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
