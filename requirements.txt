@@ -8,3 +8,6 @@ norse
 pytest
 wandb
 weave
+
+
+hdf5plugin

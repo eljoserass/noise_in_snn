@@ -2,8 +2,10 @@ __pycache__
 venv
 .venv
 TUMTraf_Event_Dataset*
+dsec_sample/
 preprocessed/
 videos/
 notes/
 wandb/
 results/
+tools/
