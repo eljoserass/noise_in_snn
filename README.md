@@ -144,6 +144,86 @@ python scripts/train_snn_eb.py \
     --wandb
 ```
 
+### DSEC Data + Simulation Utilities
+
+For the DSEC-to-events workflow (R2 sync, grayscale RGB, imagecorruptions, v2e sweeps):
+
+```bash
+# Sync from Cloudflare R2 -> local
+python scripts/r2_sync.py download \
+  --env-file ../dsec_data_managing/.env \
+  --remote-prefix dsec/train/zurich_city_02_b \
+  --local-dir data/dsec_sample/zurich_city_02_b
+
+# Build grayscale/corruptions and generate v2e events
+python scripts/dsec_rgb_event_pipeline.py \
+  --sequence-dir data/dsec_sample/zurich_city_02_b \
+  --validate-rectification \
+  --run-imagecorruptions \
+  --run-v2e \
+  --v2e-on-corruptions \
+  --skip-existing
+
+# Probe v2e timestamp scaling behavior
+python scripts/v2e_timestamp_probe.py \
+  --frames-dir outputs/v2e_timestamp_experiment/input_frames \
+  --fps-list 2,10
+
+# Batch over many sequences/splits
+python scripts/dsec_batch_pipeline.py \
+  --dsec-root data/dsec \
+  --splits train,val,test \
+  --jobs 4 \
+  --extra-args "--run-imagecorruptions --run-v2e --v2e-on-corruptions --skip-existing"
+
+# Night runs (3-machine scripts + nohup helper)
+bash scripts/night_runs/machine_a_download.sh
+bash scripts/night_runs/machine_b_train.sh
+bash scripts/night_runs/machine_c_convert_loop.sh
+bash scripts/night_runs/launch_nohup.sh scripts/night_runs/machine_a_download.sh logs/machine_a.log
+```
+
+### DSEC Training/Eval (No Timestep Repetition)
+
+Dedicated DSEC training/evaluation entrypoints:
+
+```bash
+# ANN baseline (RGB; grayscale by default for fair comparison)
+python scripts/train_ann_dsec.py \
+  --dsec-root data/dsec \
+  --train-split train \
+  --val-split val \
+  --class-ids 0,1,2,3,4,5,6,7 \
+  --wandb
+
+# SNN baseline (event sequences; one forward pass per frame, no frame repetition)
+python scripts/train_snn_dsec.py \
+  --dsec-root data/dsec \
+  --train-split train \
+  --val-split val \
+  --event-source real \
+  --event-relpath events/left/events.h5 \
+  --sequence-length 8 \
+  --sequence-stride 8 \
+  --class-ids 0,1,2,3,4,5,6,7 \
+  --wandb
+
+# Evaluate checkpoints on DSEC test split(s)
+python scripts/evaluate_dsec.py \
+  --model-path checkpoints/vgg11_ssd_snn_dsec_best.pth \
+  --model-type snn \
+  --dsec-root data/dsec \
+  --test-splits test
+```
+
+Legacy TUMTraf scripts are preserved under explicit names:
+
+```bash
+scripts/train_ann_tumtraf.py
+scripts/train_snn_tumtraf.py
+scripts/evaluate_tumtraf.py
+```
+
 ### Training Parameters
 
 | Parameter | ANN Default | SNN Default | Description |

@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Machine B: DSEC baseline training loop (resume-safe).
+# Runs ANN (RGB) + SNN (event) training and optional test evaluation.
+
+cd "$(dirname "$0")/../.."
+
+if [ ! -d ".venv" ]; then
+  python3 -m venv .venv
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+  pip install --upgrade pip
+  pip install -r requirements.txt
+else
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+fi
+
+DSEC_ROOT="${DSEC_ROOT:-data/dsec}"
+TRAIN_SPLIT="${TRAIN_SPLIT:-train}"
+VAL_SPLIT="${VAL_SPLIT:-val}"
+TEST_SPLITS="${TEST_SPLITS:-test}"
+SAVE_DIR="${SAVE_DIR:-checkpoints}"
+EPOCHS="${EPOCHS:-200}"
+POLL_SECS="${POLL_SECS:-900}"
+USE_WANDB="${USE_WANDB:-1}"
+DEVICE="${DEVICE:-cuda}"
+RUN_EVAL="${RUN_EVAL:-1}"
+CLASS_IDS="${CLASS_IDS:-0,1,2,3,4,5,6,7}"
+INPUT_HEIGHT="${INPUT_HEIGHT:-480}"
+INPUT_WIDTH="${INPUT_WIDTH:-640}"
+SNN_SEQUENCE_LENGTH="${SNN_SEQUENCE_LENGTH:-8}"
+SNN_SEQUENCE_STRIDE="${SNN_SEQUENCE_STRIDE:-8}"
+EVENT_SOURCE="${EVENT_SOURCE:-auto}"
+EVENT_RELPATH="${EVENT_RELPATH:-events/left/events.h5}"
+
+mkdir -p "$SAVE_DIR"
+
+wandb_flag=""
+if [ "$USE_WANDB" = "1" ]; then
+  wandb_flag="--wandb"
+fi
+
+echo "[B] training loop started"
+echo "[B] dsec root: $DSEC_ROOT"
+echo "[B] train split: $TRAIN_SPLIT | val split: $VAL_SPLIT"
+echo "[B] class ids: $CLASS_IDS"
+echo "[B] snn sequence length/stride: ${SNN_SEQUENCE_LENGTH}/${SNN_SEQUENCE_STRIDE}"
+
+while true; do
+  ann_ckpt="${SAVE_DIR}/vgg11_ssd_ann_dsec_best.pth"
+  snn_ckpt="${SAVE_DIR}/vgg11_ssd_snn_dsec_best.pth"
+
+  ann_resume=()
+  snn_resume=()
+  if [ -f "$ann_ckpt" ]; then
+    ann_resume=(--resume "$ann_ckpt")
+  fi
+  if [ -f "$snn_ckpt" ]; then
+    snn_resume=(--resume "$snn_ckpt")
+  fi
+
+  echo "[B] ANN train pass"
+  python scripts/train_ann_dsec.py \
+    --dsec-root "$DSEC_ROOT" \
+    --train-split "$TRAIN_SPLIT" \
+    --val-split "$VAL_SPLIT" \
+    --class-ids "$CLASS_IDS" \
+    --input-height "$INPUT_HEIGHT" \
+    --input-width "$INPUT_WIDTH" \
+    --epochs "$EPOCHS" \
+    --save-dir "$SAVE_DIR" \
+    --device "$DEVICE" \
+    $wandb_flag \
+    "${ann_resume[@]}"
+
+  echo "[B] SNN train pass"
+  python scripts/train_snn_dsec.py \
+    --dsec-root "$DSEC_ROOT" \
+    --train-split "$TRAIN_SPLIT" \
+    --val-split "$VAL_SPLIT" \
+    --class-ids "$CLASS_IDS" \
+    --event-source "$EVENT_SOURCE" \
+    --event-relpath "$EVENT_RELPATH" \
+    --sequence-length "$SNN_SEQUENCE_LENGTH" \
+    --sequence-stride "$SNN_SEQUENCE_STRIDE" \
+    --input-height "$INPUT_HEIGHT" \
+    --input-width "$INPUT_WIDTH" \
+    --epochs "$EPOCHS" \
+    --save-dir "$SAVE_DIR" \
+    --device "$DEVICE" \
+    $wandb_flag \
+    "${snn_resume[@]}"
+
+  if [ "$RUN_EVAL" = "1" ]; then
+    if [ -f "$ann_ckpt" ]; then
+      echo "[B] ANN eval pass"
+      python scripts/evaluate_dsec.py \
+        --model-path "$ann_ckpt" \
+        --model-type ann \
+        --dsec-root "$DSEC_ROOT" \
+        --test-splits "$TEST_SPLITS" \
+        --class-ids "$CLASS_IDS" \
+        --input-height "$INPUT_HEIGHT" \
+        --input-width "$INPUT_WIDTH" \
+        --device "$DEVICE" \
+        --output-dir "${SAVE_DIR}/eval_ann_dsec" \
+        $wandb_flag
+    fi
+
+    if [ -f "$snn_ckpt" ]; then
+      echo "[B] SNN eval pass"
+      python scripts/evaluate_dsec.py \
+        --model-path "$snn_ckpt" \
+        --model-type snn \
+        --dsec-root "$DSEC_ROOT" \
+        --test-splits "$TEST_SPLITS" \
+        --class-ids "$CLASS_IDS" \
+        --event-source "$EVENT_SOURCE" \
+        --event-relpath "$EVENT_RELPATH" \
+        --sequence-length "$SNN_SEQUENCE_LENGTH" \
+        --sequence-stride 1 \
+        --input-height "$INPUT_HEIGHT" \
+        --input-width "$INPUT_WIDTH" \
+        --device "$DEVICE" \
+        --output-dir "${SAVE_DIR}/eval_snn_dsec" \
+        $wandb_flag
+    fi
+  fi
+
+  echo "[B] sleeping ${POLL_SECS}s before next resume pass"
+  sleep "$POLL_SECS"
+done

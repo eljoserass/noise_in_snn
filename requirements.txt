@@ -8,6 +8,9 @@ norse
 pytest
 wandb
 weave
+boto3
+imagecorruptions
 
 
 hdf5plugin
+h5py

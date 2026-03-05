@@ -10,6 +10,7 @@ import argparse
 from pathlib import Path
 
 import cv2
+import h5py
 import numpy as np
 import yaml
 
@@ -63,8 +64,12 @@ def parse_args() -> argparse.Namespace:
         "--transform-method",
         type=str,
         default="auto",
-        choices=["auto", "calib", "scale"],
-        help="BBox transform from distorted->rectified. auto chooses by feature-match reprojection error.",
+        choices=["auto", "remap", "scale"],
+        help=(
+            "BBox transform from distorted->rectified. "
+            "remap uses DSEC per-pixel mapping (recommended); "
+            "auto chooses by feature-match reprojection error."
+        ),
     )
     parser.add_argument(
         "--window-us",
@@ -111,6 +116,38 @@ def _camera_matrix_3x3(camera_matrix_flat: list[float]) -> np.ndarray:
     return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
 
 
+def _compute_event_to_frame_remap(sequence_dir: Path) -> np.ndarray:
+    """
+    Compute mapping from left event/distorted pixels (640x480) to
+    left frame/rectified pixels (1440x1080).
+
+    This mirrors dsec-det's compute_remapping() logic and is the correct
+    mapping space for DSEC object_detections/left/tracks.npy.
+    """
+    calib_path = sequence_dir / "calibration" / "cam_to_cam.yaml"
+    rectify_map_path = sequence_dir / "events" / "left" / "rectify_map.h5"
+
+    with open(calib_path, "r", encoding="utf-8") as f:
+        calibration = yaml.safe_load(f)
+    with h5py.File(rectify_map_path, "r") as f:
+        rectify_map = f["rectify_map"][:]
+
+    k_r0 = _camera_matrix_3x3(calibration["intrinsics"]["camRect0"]["camera_matrix"])
+    k_r1 = _camera_matrix_3x3(calibration["intrinsics"]["camRect1"]["camera_matrix"])
+    r_r0_0 = np.asarray(calibration["extrinsics"]["R_rect0"], dtype=np.float64)
+    r_r1_1 = np.asarray(calibration["extrinsics"]["R_rect1"], dtype=np.float64)
+    r_1_0 = np.asarray(calibration["extrinsics"]["T_10"], dtype=np.float64)[:3, :3]
+
+    # rect. frame-left -> rect. event-left
+    p_r0_r1 = k_r0 @ r_r0_0 @ r_1_0.T @ r_r1_1.T @ np.linalg.inv(k_r1)
+
+    h, w = rectify_map.shape[:2]
+    coords_hom = np.concatenate((rectify_map, np.ones((h, w, 1), dtype=np.float32)), axis=-1)
+    remap = (np.linalg.inv(p_r0_r1) @ coords_hom[..., None]).squeeze()
+    remap = remap[..., :2] / remap[..., -1:]
+    return remap.astype(np.float32)
+
+
 def _load_calibration(sequence_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     calib_path = sequence_dir / "calibration" / "cam_to_cam.yaml"
     with open(calib_path, "r", encoding="utf-8") as f:
@@ -143,12 +180,9 @@ def _compute_scale_factors(sequence_dir: Path) -> tuple[float, float, tuple[int,
 
 def rectify_tracks(
     tracks: np.ndarray,
+    remap_event_to_frame: np.ndarray,
     sx: float,
     sy: float,
-    k_cam1: np.ndarray,
-    d_cam1: np.ndarray,
-    r_rect1: np.ndarray,
-    k_rect1: np.ndarray,
 ) -> np.ndarray:
     x = tracks["x"].astype(np.float64)
     y = tracks["y"].astype(np.float64)
@@ -165,16 +199,43 @@ def rectify_tracks(
         axis=1,
     )  # (N, 4, 2)
 
-    corners_native = corners_dist * np.array([sx, sy], dtype=np.float64)
-    corners_native_cv = corners_native.reshape(-1, 1, 2).astype(np.float32)
+    h_map, w_map = remap_event_to_frame.shape[:2]
+    map_x = remap_event_to_frame[..., 0]
+    map_y = remap_event_to_frame[..., 1]
 
-    corners_rect = cv2.undistortPoints(
-        corners_native_cv,
-        k_cam1,
-        d_cam1,
-        R=r_rect1,
-        P=k_rect1,
-    ).reshape(-1, 4, 2)
+    corners = corners_dist.reshape(-1, 2).astype(np.float32)
+    xs = corners[:, 0]
+    ys = corners[:, 1]
+    valid = (xs >= 0.0) & (xs <= (w_map - 1)) & (ys >= 0.0) & (ys <= (h_map - 1))
+
+    rect_x = np.full(xs.shape, np.nan, dtype=np.float32)
+    rect_y = np.full(ys.shape, np.nan, dtype=np.float32)
+    if np.any(valid):
+        vx = xs[valid].reshape(-1, 1)
+        vy = ys[valid].reshape(-1, 1)
+        rect_x[valid] = cv2.remap(
+            map_x,
+            vx,
+            vy,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=np.nan,
+        ).reshape(-1)
+        rect_y[valid] = cv2.remap(
+            map_y,
+            vx,
+            vy,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=np.nan,
+        ).reshape(-1)
+
+    corners_rect = np.stack([rect_x, rect_y], axis=1).reshape(-1, 4, 2)
+
+    # Fallback for any invalid samples: simple scaling avoids NaN boxes.
+    if np.any(~np.isfinite(corners_rect)):
+        fallback = corners_dist * np.array([sx, sy], dtype=np.float64)
+        corners_rect = np.where(np.isfinite(corners_rect), corners_rect, fallback.astype(np.float32))
 
     min_xy = corners_rect.min(axis=1)
     max_xy = corners_rect.max(axis=1)
@@ -196,46 +257,59 @@ def scale_tracks(tracks: np.ndarray, sx: float, sy: float) -> np.ndarray:
     return out
 
 
-def _map_points_calib(
+def _map_points_remap(
     pts_dist: np.ndarray,
-    sx: float,
-    sy: float,
-    k_cam1: np.ndarray,
-    d_cam1: np.ndarray,
-    r_rect1: np.ndarray,
-    k_rect1: np.ndarray,
+    remap_event_to_frame: np.ndarray,
 ) -> np.ndarray:
-    pts_native = pts_dist.astype(np.float64) * np.array([sx, sy], dtype=np.float64)
-    pts_rect = cv2.undistortPoints(
-        pts_native.reshape(-1, 1, 2).astype(np.float32),
-        k_cam1,
-        d_cam1,
-        R=r_rect1,
-        P=k_rect1,
-    ).reshape(-1, 2)
-    return pts_rect
+    h_map, w_map = remap_event_to_frame.shape[:2]
+    map_x = remap_event_to_frame[..., 0]
+    map_y = remap_event_to_frame[..., 1]
+
+    pts = pts_dist.astype(np.float32)
+    xs = pts[:, 0]
+    ys = pts[:, 1]
+    valid = (xs >= 0.0) & (xs <= (w_map - 1)) & (ys >= 0.0) & (ys <= (h_map - 1))
+
+    out = np.full((pts.shape[0], 2), np.nan, dtype=np.float32)
+    if np.any(valid):
+        vx = xs[valid].reshape(-1, 1)
+        vy = ys[valid].reshape(-1, 1)
+        out[valid, 0] = cv2.remap(
+            map_x,
+            vx,
+            vy,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=np.nan,
+        ).reshape(-1)
+        out[valid, 1] = cv2.remap(
+            map_y,
+            vx,
+            vy,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=np.nan,
+        ).reshape(-1)
+    return out
 
 
 def _estimate_transform_method(
     sequence_dir: Path,
     sx: float,
     sy: float,
-    k_cam1: np.ndarray,
-    d_cam1: np.ndarray,
-    r_rect1: np.ndarray,
-    k_rect1: np.ndarray,
+    remap_event_to_frame: np.ndarray,
     num_frames: int = 6,
 ) -> tuple[str, dict[str, float]]:
     distorted_paths = sorted((sequence_dir / "images" / "left" / "distorted").glob("*.png"))[:num_frames]
     rectified_paths = sorted((sequence_dir / "images" / "left" / "rectified").glob("*.png"))[:num_frames]
     if not distorted_paths or not rectified_paths:
-        return "calib", {"median_scale_err": float("inf"), "median_calib_err": float("inf"), "matches": 0}
+        return "remap", {"median_scale_err": float("inf"), "median_remap_err": float("inf"), "matches": 0}
 
     orb = cv2.ORB_create(nfeatures=2500)
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
     all_scale_err = []
-    all_calib_err = []
+    all_remap_err = []
     match_count = 0
 
     for d_path, r_path in zip(distorted_paths, rectified_paths):
@@ -258,23 +332,26 @@ def _estimate_transform_method(
         pts_r = np.array([kp_r[m.trainIdx].pt for m in matches], dtype=np.float32)
 
         pred_scale = pts_d * np.array([sx, sy], dtype=np.float32)
-        pred_calib = _map_points_calib(pts_d, sx, sy, k_cam1, d_cam1, r_rect1, k_rect1).astype(np.float32)
+        pred_remap = _map_points_remap(pts_d, remap_event_to_frame).astype(np.float32)
 
         scale_err = np.linalg.norm(pred_scale - pts_r, axis=1)
-        calib_err = np.linalg.norm(pred_calib - pts_r, axis=1)
+        finite = np.isfinite(pred_remap).all(axis=1)
+        if not np.any(finite):
+            continue
+        remap_err = np.linalg.norm(pred_remap[finite] - pts_r[finite], axis=1)
         all_scale_err.append(scale_err)
-        all_calib_err.append(calib_err)
+        all_remap_err.append(remap_err)
         match_count += len(matches)
 
-    if match_count == 0:
-        return "calib", {"median_scale_err": float("inf"), "median_calib_err": float("inf"), "matches": 0}
+    if match_count == 0 or not all_remap_err:
+        return "remap", {"median_scale_err": float("inf"), "median_remap_err": float("inf"), "matches": 0}
 
     scale_all = np.concatenate(all_scale_err)
-    calib_all = np.concatenate(all_calib_err)
+    remap_all = np.concatenate(all_remap_err)
     med_scale = float(np.median(scale_all))
-    med_calib = float(np.median(calib_all))
-    method = "scale" if med_scale < med_calib else "calib"
-    return method, {"median_scale_err": med_scale, "median_calib_err": med_calib, "matches": match_count}
+    med_remap = float(np.median(remap_all))
+    method = "scale" if med_scale < med_remap else "remap"
+    return method, {"median_scale_err": med_scale, "median_remap_err": med_remap, "matches": match_count}
 
 
 def draw_frame_boxes(
@@ -407,7 +484,8 @@ def main() -> None:
         validation_dir = seq_dir / "object_detections" / "left" / "rectified_validation"
 
     tracks = np.load(tracks_path)
-    k_cam1, d_cam1, r_rect1, k_rect1 = _load_calibration(seq_dir)
+    _ = _load_calibration(seq_dir)  # kept for sanity checks / future extensions
+    remap_event_to_frame = _compute_event_to_frame_remap(seq_dir)
     sx, sy, dist_size, rect_size = _compute_scale_factors(seq_dir)
 
     method = args.transform_method
@@ -417,10 +495,7 @@ def main() -> None:
             sequence_dir=seq_dir,
             sx=sx,
             sy=sy,
-            k_cam1=k_cam1,
-            d_cam1=d_cam1,
-            r_rect1=r_rect1,
-            k_rect1=k_rect1,
+            remap_event_to_frame=remap_event_to_frame,
         )
 
     if method == "scale":
@@ -428,12 +503,9 @@ def main() -> None:
     else:
         tracks_rectified = rectify_tracks(
             tracks=tracks,
+            remap_event_to_frame=remap_event_to_frame,
             sx=sx,
             sy=sy,
-            k_cam1=k_cam1,
-            d_cam1=d_cam1,
-            r_rect1=r_rect1,
-            k_rect1=k_rect1,
         )
     np.save(output_tracks, tracks_rectified)
 
@@ -460,7 +532,7 @@ def main() -> None:
         print(
             "  auto metrics: "
             f"median_scale_err={method_metrics['median_scale_err']:.2f}px, "
-            f"median_calib_err={method_metrics['median_calib_err']:.2f}px, "
+            f"median_remap_err={method_metrics['median_remap_err']:.2f}px, "
             f"matches={method_metrics['matches']}"
         )
     print(f"  validation time mode: {args.time_mode}")
