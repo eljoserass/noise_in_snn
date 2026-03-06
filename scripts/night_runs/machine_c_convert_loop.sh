@@ -51,12 +51,13 @@ V2E_REF="${V2E_REF:-}"      # optional git ref/commit/tag
 PULL_V2E="${PULL_V2E:-0}"    # set 1 to pull latest if repo already exists
 INSTALL_V2E_DEPS="${INSTALL_V2E_DEPS:-0}"  # 0 recommended on py3.12+/linux
 V2E_DEPS_MODE="${V2E_DEPS_MODE:-minimal}"  # minimal | full
+ENSURE_V2E_RUNTIME_DEPS="${ENSURE_V2E_RUNTIME_DEPS:-1}"
 
 DSEC_ROOT="${DSEC_ROOT:-data/dsec}"
 # Split-specific processing policy:
-# - train/val: grayscale + clean v2e only
+# - train (includes val subset sequences in DSEC split config): grayscale + clean v2e only
 # - test: grayscale + imagecorruptions + v2e on corruptions + v2e manual noise sweeps
-TRAINVAL_SPLITS="${TRAINVAL_SPLITS:-train,val}"
+TRAINVAL_SPLITS="${TRAINVAL_SPLITS:-train}"
 TEST_SPLITS="${TEST_SPLITS:-test}"
 JOBS="${JOBS:-2}"
 POLL_SECS="${POLL_SECS:-900}"
@@ -134,6 +135,20 @@ if [ ! -f "${V2E_SCRIPT}" ]; then
   exit 1
 fi
 
+# Ensure lightweight v2e runtime deps needed for folder-input conversion.
+if [ "${ENSURE_V2E_RUNTIME_DEPS}" = "1" ]; then
+  if ! python - <<'PY' >/dev/null 2>&1
+import argcomplete  # noqa: F401
+from engineering_notation import EngNumber  # noqa: F401
+import screeninfo  # noqa: F401
+import easygui  # noqa: F401
+PY
+  then
+    echo "[C] installing missing lightweight v2e runtime deps"
+    pip install argcomplete engineering-notation screeninfo easygui || true
+  fi
+fi
+
 run_upload_once() {
   upload_args=(
     "--env-file" "${ENV_FILE}"
@@ -192,7 +207,7 @@ fi
 
 echo "[C] conversion loop started"
 echo "[C] dsec root: ${DSEC_ROOT}"
-echo "[C] train/val splits: ${TRAINVAL_SPLITS} (clean v2e only)"
+echo "[C] train splits: ${TRAINVAL_SPLITS} (clean v2e only; includes val subset sequences)"
 echo "[C] test splits: ${TEST_SPLITS} (full corruption + noisy v2e sweeps)"
 echo "[C] test severities: ${TEST_SEVERITIES} | corruption subset: ${TEST_CORRUPTION_SUBSET}"
 echo "[C] train/val v2e modes: ${TRAINVAL_V2E_MODES} | manual noises: ${TRAINVAL_MANUAL_V2E_NOISES}"
