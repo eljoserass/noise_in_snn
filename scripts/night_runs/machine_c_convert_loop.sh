@@ -148,11 +148,10 @@ if [ "${ENSURE_V2E_RUNTIME_DEPS}" = "1" ]; then
 import argcomplete  # noqa: F401
 from engineering_notation import EngNumber  # noqa: F401
 import screeninfo  # noqa: F401
-import easygui  # noqa: F401
 PY
   then
     echo "[C] installing missing lightweight v2e runtime deps"
-    pip install argcomplete engineering-notation screeninfo easygui || true
+    pip install argcomplete engineering-notation screeninfo || true
   fi
 fi
 
