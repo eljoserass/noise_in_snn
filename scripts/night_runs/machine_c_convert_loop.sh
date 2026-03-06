@@ -7,15 +7,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-if [ ! -d ".venv" ]; then
-  python3 -m venv .venv
+# Use a dedicated, persistent env for machine C to avoid cross-machine
+# corruption when multiple pods share the same workspace.
+VENV_DIR="${VENV_DIR:-.venv_machine_c}"
+
+if [ ! -d "${VENV_DIR}" ]; then
+  python3 -m venv "${VENV_DIR}"
   # shellcheck disable=SC1091
-  source .venv/bin/activate
+  source "${VENV_DIR}/bin/activate"
   pip install --upgrade pip
   pip install -r requirements.txt
 else
   # shellcheck disable=SC1091
-  source .venv/bin/activate
+  source "${VENV_DIR}/bin/activate"
 fi
 
 # imagecorruptions currently imports pkg_resources; ensure compatible setuptools.
@@ -52,6 +56,9 @@ PULL_V2E="${PULL_V2E:-0}"    # set 1 to pull latest if repo already exists
 INSTALL_V2E_DEPS="${INSTALL_V2E_DEPS:-0}"  # 0 recommended on py3.12+/linux
 V2E_DEPS_MODE="${V2E_DEPS_MODE:-minimal}"  # minimal | full
 ENSURE_V2E_RUNTIME_DEPS="${ENSURE_V2E_RUNTIME_DEPS:-1}"
+ENSURE_TORCH="${ENSURE_TORCH:-1}"
+TORCH_INSTALL_MODE="${TORCH_INSTALL_MODE:-cpu}"   # cpu | default
+TORCH_PACKAGES="${TORCH_PACKAGES:-torch torchvision torchaudio}"
 
 DSEC_ROOT="${DSEC_ROOT:-data/dsec}"
 # Split-specific processing policy:
@@ -146,6 +153,21 @@ PY
   then
     echo "[C] installing missing lightweight v2e runtime deps"
     pip install argcomplete engineering-notation screeninfo easygui || true
+  fi
+fi
+
+if [ "${ENSURE_TORCH}" = "1" ]; then
+  if ! python - <<'PY' >/dev/null 2>&1
+import torch  # noqa: F401
+PY
+  then
+    echo "[C] torch import is broken; reinstalling (${TORCH_INSTALL_MODE} mode)"
+    if [ "${TORCH_INSTALL_MODE}" = "cpu" ]; then
+      # CPU wheels are enough for v2e conversion and avoid CUDA coupling.
+      pip install --force-reinstall --no-cache-dir --index-url https://download.pytorch.org/whl/cpu ${TORCH_PACKAGES}
+    else
+      pip install --force-reinstall --no-cache-dir ${TORCH_PACKAGES}
+    fi
   fi
 fi
 
