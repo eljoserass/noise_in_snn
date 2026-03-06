@@ -13,7 +13,8 @@ fi
 ENV_FILE="${ENV_FILE:-../dsec_data_managing/.env}"
 REMOTE_ROOT="${REMOTE_ROOT:-dsec}"
 LOCAL_ROOT="${LOCAL_ROOT:-data/dsec}"
-SPLITS="${SPLITS:-train,val,test}"
+# DSEC-Detection commonly uses physical train/test folders and defines val as a sequence subset of train.
+SPLITS="${SPLITS:-train,test}"
 WORKERS="${WORKERS:-64}"
 
 IFS=',' read -r -a SPLIT_ARR <<< "$SPLITS"
@@ -52,4 +53,3 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo "[A] all downloads completed"
-

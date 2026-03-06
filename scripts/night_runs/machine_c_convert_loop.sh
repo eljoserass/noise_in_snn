@@ -53,7 +53,7 @@ INSTALL_V2E_DEPS="${INSTALL_V2E_DEPS:-0}"  # 0 recommended on py3.12+/linux
 V2E_DEPS_MODE="${V2E_DEPS_MODE:-minimal}"  # minimal | full
 
 DSEC_ROOT="${DSEC_ROOT:-data/dsec}"
-SPLITS="${SPLITS:-train,val,test}"
+SPLITS="${SPLITS:-train,test}"
 JOBS="${JOBS:-2}"
 POLL_SECS="${POLL_SECS:-900}"
 
@@ -71,6 +71,24 @@ ENV_FILE="${ENV_FILE:-../dsec_data_managing/.env}"
 UPLOAD_WORKERS="${UPLOAD_WORKERS:-32}"
 UPLOAD_REMOTE_PREFIX="${UPLOAD_REMOTE_PREFIX:-dsec_processed}"
 UPLOAD_SCOPE="${UPLOAD_SCOPE:-all_processed}"  # events_only | all_processed
+UPLOAD_INTERVAL_SECS="${UPLOAD_INTERVAL_SECS:-1800}"  # periodic background upload cadence
+
+# Auto-detect common DSEC root locations when default path is wrong.
+if [ ! -d "${DSEC_ROOT}" ]; then
+  for candidate in "../data/dsec" "/workspace/data/dsec"; do
+    if [ -d "${candidate}" ]; then
+      echo "[C] DSEC root not found at ${DSEC_ROOT}; using ${candidate}"
+      DSEC_ROOT="${candidate}"
+      break
+    fi
+  done
+fi
+
+if [ ! -d "${DSEC_ROOT}" ]; then
+  echo "[C] ERROR: DSEC root not found: ${DSEC_ROOT}"
+  echo "[C] Set DSEC_ROOT explicitly (e.g. DSEC_ROOT=../data/dsec)"
+  exit 1
+fi
 
 if [ "$BOOTSTRAP_V2E" = "1" ]; then
   if [ ! -f "${V2E_SCRIPT}" ]; then
@@ -109,6 +127,62 @@ if [ ! -f "${V2E_SCRIPT}" ]; then
   exit 1
 fi
 
+run_upload_once() {
+  upload_args=(
+    "--env-file" "${ENV_FILE}"
+    "--workers" "${UPLOAD_WORKERS}"
+  )
+
+  if [ "${UPLOAD_SCOPE}" = "events_only" ]; then
+    upload_globs=(
+      "*/*/v2e_output*/dvs_events.txt"
+      "*/*/v2e_output*/v2e-args.txt"
+      "*/*/object_detections/left/tracks_rectified*.npy"
+    )
+  else
+    upload_globs=(
+      "*/*/v2e_output*/dvs_events.txt"
+      "*/*/v2e_output*/v2e-args.txt"
+      "*/*/images/left/distorted_gray/*.png"
+      "*/*/images/left/distorted_*_s*/*.png"
+      "*/*/object_detections/left/tracks_rectified*.npy"
+      "*/*/object_detections/left/rectified_validation*/*.png"
+    )
+  fi
+
+  for g in "${upload_globs[@]}"; do
+    upload_args+=("--include-glob" "${g}")
+  done
+
+  python scripts/r2_sync.py \
+    "${upload_args[@]}" \
+    upload \
+    --local-dir "${DSEC_ROOT}" \
+    --remote-prefix "${UPLOAD_REMOTE_PREFIX}"
+}
+
+uploader_pid=""
+stop_uploader() {
+  if [ -n "${uploader_pid}" ] && kill -0 "${uploader_pid}" >/dev/null 2>&1; then
+    kill "${uploader_pid}" >/dev/null 2>&1 || true
+  fi
+}
+trap stop_uploader EXIT INT TERM
+
+if [ "$ENABLE_UPLOAD" = "1" ] && [ "${UPLOAD_INTERVAL_SECS}" -gt 0 ]; then
+  (
+    while true; do
+      echo "[C] periodic upload run: $(date -Iseconds)"
+      if ! run_upload_once; then
+        echo "[C] periodic upload warning: upload failed"
+      fi
+      sleep "${UPLOAD_INTERVAL_SECS}"
+    done
+  ) &
+  uploader_pid="$!"
+  echo "[C] periodic uploader started (pid=${uploader_pid}, interval=${UPLOAD_INTERVAL_SECS}s)"
+fi
+
 echo "[C] conversion loop started"
 echo "[C] dsec root: ${DSEC_ROOT}"
 echo "[C] splits: ${SPLITS} | jobs=${JOBS}"
@@ -117,45 +191,19 @@ echo "[C] v2e script: ${V2E_SCRIPT}"
 
 while true; do
   echo "[C] batch run: $(date -Iseconds)"
-  python scripts/dsec_batch_pipeline.py \
+  if ! python scripts/dsec_batch_pipeline.py \
     --dsec-root "${DSEC_ROOT}" \
     --splits "${SPLITS}" \
     --jobs "${JOBS}" \
-    --extra-args "--validate-rectification --run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --severity-levels ${SEVERITIES} --corruption-subset ${CORRUPTION_SUBSET} --v2e-modes ${V2E_MODES} --manual-v2e-noises ${MANUAL_V2E_NOISES} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+    --extra-args "--validate-rectification --run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --severity-levels ${SEVERITIES} --corruption-subset ${CORRUPTION_SUBSET} --v2e-modes ${V2E_MODES} --manual-v2e-noises ${MANUAL_V2E_NOISES} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"; then
+    echo "[C] batch warning: one or more sequences failed; continuing loop"
+  fi
 
   if [ "$ENABLE_UPLOAD" = "1" ]; then
-    echo "[C] upload run: $(date -Iseconds)"
-    upload_args=(
-      "--env-file" "${ENV_FILE}"
-      "--workers" "${UPLOAD_WORKERS}"
-    )
-
-    if [ "${UPLOAD_SCOPE}" = "events_only" ]; then
-      upload_globs=(
-        "*/*/v2e_output*/dvs_events.txt"
-        "*/*/v2e_output*/v2e-args.txt"
-        "*/*/object_detections/left/tracks_rectified*.npy"
-      )
-    else
-      upload_globs=(
-        "*/*/v2e_output*/dvs_events.txt"
-        "*/*/v2e_output*/v2e-args.txt"
-        "*/*/images/left/distorted_gray/*.png"
-        "*/*/images/left/distorted_*_s*/*.png"
-        "*/*/object_detections/left/tracks_rectified*.npy"
-        "*/*/object_detections/left/rectified_validation*/*.png"
-      )
+    echo "[C] end-of-batch upload run: $(date -Iseconds)"
+    if ! run_upload_once; then
+      echo "[C] end-of-batch upload warning: upload failed"
     fi
-
-    for g in "${upload_globs[@]}"; do
-      upload_args+=("--include-glob" "${g}")
-    done
-
-    python scripts/r2_sync.py \
-      "${upload_args[@]}" \
-      upload \
-      --local-dir "${DSEC_ROOT}" \
-      --remote-prefix "${UPLOAD_REMOTE_PREFIX}"
   fi
 
   echo "[C] sleeping ${POLL_SECS}s"

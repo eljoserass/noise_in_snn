@@ -28,6 +28,51 @@ def parse_list(value: str) -> list[str] | None:
     return out or None
 
 
+def _load_split_list(split_config: Path, split_name: str) -> list[str]:
+    if not split_config.exists():
+        return []
+    lines = split_config.read_text(encoding="utf-8").splitlines()
+    out: list[str] = []
+    in_section = False
+    for raw in lines:
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line.startswith(" "):
+            in_section = stripped == f"{split_name}:"
+            continue
+        if in_section and stripped.startswith("- "):
+            out.append(stripped[2:].strip())
+    return out
+
+
+def resolve_val_split(args) -> None:
+    val_dir = Path(args.dsec_root) / args.val_split
+    if args.val_split != "val" or val_dir.exists():
+        return
+    print(f"[train_ann_dsec] val directory not found: {val_dir}")
+    args.val_split = args.train_split
+    if args.val_sequences.strip():
+        print(
+            "[train_ann_dsec] using provided --val-sequences with --val-split=train "
+            "(DSEC val is typically a subsequence list of train)."
+        )
+        return
+    seqs = _load_split_list(Path(args.split_config), "val")
+    if seqs:
+        args.val_sequences = ",".join(seqs)
+        print(
+            f"[train_ann_dsec] loaded {len(seqs)} val sequences from {args.split_config} "
+            "and switched --val-split to train"
+        )
+    else:
+        print(
+            "[train_ann_dsec] split config missing/empty; "
+            "falling back to full train split for validation."
+        )
+
+
 def collate_fn(batch):
     images, targets = zip(*batch)
     return torch.stack(images, dim=0), list(targets)
@@ -134,6 +179,12 @@ def parse_args():
     parser.add_argument("--dsec-root", type=str, default="data/dsec", help="DSEC root containing train/val/test")
     parser.add_argument("--train-split", type=str, default="train")
     parser.add_argument("--val-split", type=str, default="val")
+    parser.add_argument(
+        "--split-config",
+        type=str,
+        default="../dsec_data_managing/dsec-det/config/train_val_test_split.yaml",
+        help="Optional split config used to resolve val sequences when val dir is absent.",
+    )
     parser.add_argument("--train-sequences", type=str, default="", help="Optional comma-separated sequence names")
     parser.add_argument("--val-sequences", type=str, default="", help="Optional comma-separated sequence names")
     parser.add_argument("--image-relpath", type=str, default="images/left/distorted")
@@ -186,6 +237,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    resolve_val_split(args)
     os.makedirs(args.save_dir, exist_ok=True)
     device = torch.device(args.device)
     class_ids = parse_class_ids(args.class_ids)

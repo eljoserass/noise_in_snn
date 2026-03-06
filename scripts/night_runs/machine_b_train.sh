@@ -20,6 +20,9 @@ fi
 DSEC_ROOT="${DSEC_ROOT:-data/dsec}"
 TRAIN_SPLIT="${TRAIN_SPLIT:-train}"
 VAL_SPLIT="${VAL_SPLIT:-val}"
+TRAIN_SEQUENCES="${TRAIN_SEQUENCES:-}"
+VAL_SEQUENCES="${VAL_SEQUENCES:-}"
+SPLIT_CONFIG_PATH="${SPLIT_CONFIG_PATH:-../dsec_data_managing/dsec-det/config/train_val_test_split.yaml}"
 TEST_SPLITS="${TEST_SPLITS:-test}"
 SAVE_DIR="${SAVE_DIR:-checkpoints}"
 EPOCHS="${EPOCHS:-200}"
@@ -51,6 +54,31 @@ WANDB_RUN_NAME_SNN="${WANDB_RUN_NAME_SNN:-}"
 WANDB_RUN_NAME_EVAL_ANN="${WANDB_RUN_NAME_EVAL_ANN:-}"
 WANDB_RUN_NAME_EVAL_SNN="${WANDB_RUN_NAME_EVAL_SNN:-}"
 
+# DSEC is often distributed as train/test directories only; val is a subsequence list inside train.
+if [ "$VAL_SPLIT" = "val" ] && [ ! -d "${DSEC_ROOT}/val" ]; then
+  echo "[B] no physical val directory found at ${DSEC_ROOT}/val"
+  if [ -z "$VAL_SEQUENCES" ] && [ -f "$SPLIT_CONFIG_PATH" ]; then
+    parsed_val_sequences="$(
+      awk '
+        $1=="val:" {in_val=1; next}
+        in_val && $1=="test:" {in_val=0}
+        in_val && $1=="-" {print $2}
+      ' "$SPLIT_CONFIG_PATH" | paste -sd "," -
+    )"
+    if [ -n "$parsed_val_sequences" ]; then
+      VAL_SPLIT="train"
+      VAL_SEQUENCES="$parsed_val_sequences"
+      echo "[B] using val subsequences from split config: ${SPLIT_CONFIG_PATH}"
+    else
+      VAL_SPLIT="train"
+      echo "[B] split config found but val list was empty; fallback VAL_SPLIT=train"
+    fi
+  else
+    VAL_SPLIT="train"
+    echo "[B] fallback VAL_SPLIT=train (set VAL_SEQUENCES explicitly for strict val)"
+  fi
+fi
+
 mkdir -p "$SAVE_DIR"
 
 wandb_flag=""
@@ -78,6 +106,8 @@ fi
 echo "[B] training loop started"
 echo "[B] dsec root: $DSEC_ROOT"
 echo "[B] train split: $TRAIN_SPLIT | val split: $VAL_SPLIT"
+echo "[B] train sequences: ${TRAIN_SEQUENCES:-<all>}"
+echo "[B] val sequences: ${VAL_SEQUENCES:-<all>}"
 echo "[B] class ids: $CLASS_IDS"
 echo "[B] snn sequence length/stride: ${SNN_SEQUENCE_LENGTH}/${SNN_SEQUENCE_STRIDE}"
 echo "[B] ann image/tracks: ${ANN_IMAGE_RELPATH} | ${ANN_TRACKS_RELPATH}"
@@ -102,6 +132,8 @@ while true; do
     --dsec-root "$DSEC_ROOT" \
     --train-split "$TRAIN_SPLIT" \
     --val-split "$VAL_SPLIT" \
+    --train-sequences "$TRAIN_SEQUENCES" \
+    --val-sequences "$VAL_SEQUENCES" \
     --image-relpath "$ANN_IMAGE_RELPATH" \
     --tracks-relpath "$ANN_TRACKS_RELPATH" \
     --class-ids "$CLASS_IDS" \
@@ -126,6 +158,8 @@ while true; do
     --dsec-root "$DSEC_ROOT" \
     --train-split "$TRAIN_SPLIT" \
     --val-split "$VAL_SPLIT" \
+    --train-sequences "$TRAIN_SEQUENCES" \
+    --val-sequences "$VAL_SEQUENCES" \
     --image-relpath "$SNN_IMAGE_RELPATH" \
     --tracks-relpath "$SNN_TRACKS_RELPATH" \
     --class-ids "$CLASS_IDS" \
