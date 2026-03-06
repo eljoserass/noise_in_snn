@@ -95,20 +95,34 @@ def apply_imagecorruptions(
             out_dir.mkdir(parents=True, exist_ok=True)
             out_dirs[(cname, sev)] = out_dir
             written = 0
+            failed = False
+            error_msg = ""
             for src in src_frames:
                 dst = out_dir / src.name
                 if skip_existing and dst.exists():
                     continue
                 img_bgr = cv2.imread(str(src), cv2.IMREAD_COLOR)
                 if img_bgr is None:
-                    raise RuntimeError(f"Could not read frame: {src}")
+                    failed = True
+                    error_msg = f"Could not read frame: {src}"
+                    break
                 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-                corr_rgb = corrupt(img_rgb, corruption_name=cname, severity=sev)
+                try:
+                    corr_rgb = corrupt(img_rgb, corruption_name=cname, severity=sev)
+                except Exception as exc:
+                    failed = True
+                    error_msg = str(exc)
+                    break
                 corr_bgr = cv2.cvtColor(corr_rgb.astype(np.uint8), cv2.COLOR_RGB2BGR)
                 ok = cv2.imwrite(str(dst), corr_bgr)
                 if not ok:
-                    raise RuntimeError(f"Could not write frame: {dst}")
+                    failed = True
+                    error_msg = f"Could not write frame: {dst}"
+                    break
                 written += 1
+            if failed:
+                print(f"[corrupt][warn] {cname:<18} s{sev} failed, skipping this corruption: {error_msg}")
+                continue
             total = len(list(out_dir.glob("*.png")))
             print(f"[corrupt] {cname:<18} s{sev} -> {out_dir.name} (total={total}, new={written})")
     return out_dirs

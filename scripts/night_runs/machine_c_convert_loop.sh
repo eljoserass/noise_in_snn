@@ -19,13 +19,27 @@ else
 fi
 
 # imagecorruptions currently imports pkg_resources; ensure compatible setuptools.
+USE_IMAGECORRUPTIONS_SRC="${USE_IMAGECORRUPTIONS_SRC:-1}"
+IMAGECORRUPTIONS_SRC="${IMAGECORRUPTIONS_SRC:-../imagecorruptions}"
 if ! python - <<'PY' >/dev/null 2>&1
 import pkg_resources  # noqa: F401
 import imagecorruptions  # noqa: F401
 PY
 then
   echo "[C] fixing python deps for imagecorruptions/pkg_resources compatibility"
-  pip install "setuptools<81" imagecorruptions
+  pip install "setuptools<81"
+  if [ "$USE_IMAGECORRUPTIONS_SRC" = "1" ] && [ -f "${IMAGECORRUPTIONS_SRC}/setup.py" ]; then
+    echo "[C] installing imagecorruptions from source: ${IMAGECORRUPTIONS_SRC}"
+    pip install -e "${IMAGECORRUPTIONS_SRC}"
+  else
+    pip install imagecorruptions
+  fi
+fi
+
+# Ensure we're on source imagecorruptions if provided (PyPI can be outdated).
+if [ "$USE_IMAGECORRUPTIONS_SRC" = "1" ] && [ -f "${IMAGECORRUPTIONS_SRC}/setup.py" ]; then
+  echo "[C] ensuring imagecorruptions source install: ${IMAGECORRUPTIONS_SRC}"
+  pip install -e "${IMAGECORRUPTIONS_SRC}"
 fi
 
 # v2e bootstrap settings (for fresh machines)
