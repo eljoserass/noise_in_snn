@@ -4,8 +4,8 @@ DSEC dataset loaders for ANN and SNN SSD training.
 Expected directory layout (per sequence):
   <dsec_root>/<split>/<sequence>/
     images/timestamps.txt
-    images/left/rectified/*.png
-    object_detections/left/tracks_rectified.npy  (or tracks.npy fallback)
+    images/left/distorted/*.png
+    object_detections/left/tracks.npy
     events/left/events.h5                         (real events)
     v2e_output_*/dvs_events.txt                  (simulated events, optional)
 """
@@ -167,7 +167,20 @@ def _tracks_to_target(
     image_height: int,
     image_width: int,
     class_id_to_label: dict[int, int],
+    crop_top_px: int = 0,
+    crop_bottom_px: int = 0,
+    crop_left_px: int = 0,
+    crop_right_px: int = 0,
 ) -> dict[str, torch.Tensor]:
+    eff_h = int(image_height - crop_top_px - crop_bottom_px)
+    eff_w = int(image_width - crop_left_px - crop_right_px)
+    if eff_h <= 0 or eff_w <= 0:
+        raise ValueError(
+            f"Invalid crop resulting in non-positive shape: "
+            f"({image_height},{image_width}) with crop "
+            f"top={crop_top_px}, bottom={crop_bottom_px}, left={crop_left_px}, right={crop_right_px}"
+        )
+
     boxes: list[list[float]] = []
     labels: list[int] = []
 
@@ -184,10 +197,25 @@ def _tracks_to_target(
         if w <= 0 or h <= 0:
             continue
 
-        cx = (x + 0.5 * w) / image_width
-        cy = (y + 0.5 * h) / image_height
-        nw = w / image_width
-        nh = h / image_height
+        # Clip box to cropped image bounds before normalization.
+        x1 = x - float(crop_left_px)
+        y1 = y - float(crop_top_px)
+        x2 = x1 + w
+        y2 = y1 + h
+
+        x1 = max(0.0, min(x1, float(eff_w)))
+        y1 = max(0.0, min(y1, float(eff_h)))
+        x2 = max(0.0, min(x2, float(eff_w)))
+        y2 = max(0.0, min(y2, float(eff_h)))
+        cw = x2 - x1
+        ch = y2 - y1
+        if cw <= 0.0 or ch <= 0.0:
+            continue
+
+        cx = (x1 + 0.5 * cw) / float(eff_w)
+        cy = (y1 + 0.5 * ch) / float(eff_h)
+        nw = cw / float(eff_w)
+        nh = ch / float(eff_h)
 
         if nw <= 0 or nh <= 0:
             continue
@@ -286,9 +314,9 @@ class DSECSSD_ANN(Dataset):
         self,
         dsec_root: Path | str,
         split: str,
-        image_relpath: str = "images/left/rectified",
+        image_relpath: str = "images/left/distorted",
         timestamps_relpath: str = "images/timestamps.txt",
-        tracks_relpath: str = "object_detections/left/tracks_rectified.npy",
+        tracks_relpath: str = "object_detections/left/tracks.npy",
         class_ids: str | list[int] | None = None,
         sequences: list[str] | None = None,
         time_mode: str = "nearest",
@@ -296,6 +324,10 @@ class DSECSSD_ANN(Dataset):
         max_time_delta_us: int | None = 50_000,
         max_frames_per_sequence: int | None = None,
         force_grayscale: bool = True,
+        crop_top_px: int = 0,
+        crop_bottom_px: int = 0,
+        crop_left_px: int = 0,
+        crop_right_px: int = 0,
         transform=None,
     ):
         self.dsec_root = Path(dsec_root)
@@ -311,6 +343,10 @@ class DSECSSD_ANN(Dataset):
         self.max_time_delta_us = None if max_time_delta_us is None else int(max_time_delta_us)
         self.max_frames_per_sequence = max_frames_per_sequence
         self.force_grayscale = force_grayscale
+        self.crop_top_px = int(crop_top_px)
+        self.crop_bottom_px = int(crop_bottom_px)
+        self.crop_left_px = int(crop_left_px)
+        self.crop_right_px = int(crop_right_px)
         self.transform = transform
 
         sequence_dirs = _discover_sequence_dirs(self.dsec_root, self.split, sequences)
@@ -356,6 +392,19 @@ class DSECSSD_ANN(Dataset):
         if image.ndim == 2:
             image = image.unsqueeze(0)
 
+        h = int(image.shape[1])
+        w = int(image.shape[2])
+        y0 = self.crop_top_px
+        y1 = h - self.crop_bottom_px
+        x0 = self.crop_left_px
+        x1 = w - self.crop_right_px
+        if y1 <= y0 or x1 <= x0:
+            raise ValueError(
+                f"Invalid crop for {frame_path}: image=({h},{w}) "
+                f"crop top/bottom/left/right={self.crop_top_px}/{self.crop_bottom_px}/{self.crop_left_px}/{self.crop_right_px}"
+            )
+        image = image[:, y0:y1, x0:x1]
+
         if self.force_grayscale:
             gray = image.float().mean(dim=0, keepdim=True)
             image = gray.repeat(3, 1, 1).to(dtype=image.dtype)
@@ -382,6 +431,10 @@ class DSECSSD_ANN(Dataset):
             image_height=seq.image_height,
             image_width=seq.image_width,
             class_id_to_label=self.class_id_to_label,
+            crop_top_px=self.crop_top_px,
+            crop_bottom_px=self.crop_bottom_px,
+            crop_left_px=self.crop_left_px,
+            crop_right_px=self.crop_right_px,
         )
         return image, target
 
@@ -593,9 +646,9 @@ class DSECSSD_SNN(Dataset):
         self,
         dsec_root: Path | str,
         split: str,
-        image_relpath: str = "images/left/rectified",
+        image_relpath: str = "images/left/distorted",
         timestamps_relpath: str = "images/timestamps.txt",
-        tracks_relpath: str = "object_detections/left/tracks_rectified.npy",
+        tracks_relpath: str = "object_detections/left/tracks.npy",
         class_ids: str | list[int] | None = None,
         sequences: list[str] | None = None,
         time_mode: str = "nearest",
@@ -766,4 +819,3 @@ class DSECSSD_SNN(Dataset):
             targets.append(target)
 
         return torch.stack(images, dim=0), targets
-

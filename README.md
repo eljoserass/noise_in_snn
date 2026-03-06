@@ -193,6 +193,8 @@ python scripts/train_ann_dsec.py \
   --dsec-root data/dsec \
   --train-split train \
   --val-split val \
+  --image-relpath images/left/distorted \
+  --tracks-relpath object_detections/left/tracks.npy \
   --class-ids 0,1,2,3,4,5,6,7 \
   --wandb
 
@@ -214,6 +216,16 @@ python scripts/evaluate_dsec.py \
   --model-type snn \
   --dsec-root data/dsec \
   --test-splits test
+
+# Preview what ANN/SNN training actually sees (with GT boxes)
+python scripts/preview_dsec_training_view.py \
+  --dsec-root data/dsec \
+  --split train \
+  --sequences zurich_city_02_b \
+  --event-source real \
+  --event-relpath events/left/events.h5 \
+  --ann-crop-bottom-px 0 \
+  --out-dir outputs/dsec_training_view_check
 ```
 
 Legacy TUMTraf scripts are preserved under explicit names:

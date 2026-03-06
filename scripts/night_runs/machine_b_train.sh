@@ -30,6 +30,17 @@ RUN_EVAL="${RUN_EVAL:-1}"
 CLASS_IDS="${CLASS_IDS:-0,1,2,3,4,5,6,7}"
 INPUT_HEIGHT="${INPUT_HEIGHT:-480}"
 INPUT_WIDTH="${INPUT_WIDTH:-640}"
+NUM_WORKERS="${NUM_WORKERS:-4}"
+ANN_BATCH_SIZE="${ANN_BATCH_SIZE:-16}"
+SNN_BATCH_SIZE="${SNN_BATCH_SIZE:-4}"
+ANN_IMAGE_RELPATH="${ANN_IMAGE_RELPATH:-images/left/distorted}"
+ANN_TRACKS_RELPATH="${ANN_TRACKS_RELPATH:-object_detections/left/tracks.npy}"
+ANN_CROP_TOP_PX="${ANN_CROP_TOP_PX:-0}"
+ANN_CROP_BOTTOM_PX="${ANN_CROP_BOTTOM_PX:-0}"
+ANN_CROP_LEFT_PX="${ANN_CROP_LEFT_PX:-0}"
+ANN_CROP_RIGHT_PX="${ANN_CROP_RIGHT_PX:-0}"
+SNN_IMAGE_RELPATH="${SNN_IMAGE_RELPATH:-images/left/distorted}"
+SNN_TRACKS_RELPATH="${SNN_TRACKS_RELPATH:-object_detections/left/tracks.npy}"
 SNN_SEQUENCE_LENGTH="${SNN_SEQUENCE_LENGTH:-8}"
 SNN_SEQUENCE_STRIDE="${SNN_SEQUENCE_STRIDE:-8}"
 EVENT_SOURCE="${EVENT_SOURCE:-auto}"
@@ -69,6 +80,9 @@ echo "[B] dsec root: $DSEC_ROOT"
 echo "[B] train split: $TRAIN_SPLIT | val split: $VAL_SPLIT"
 echo "[B] class ids: $CLASS_IDS"
 echo "[B] snn sequence length/stride: ${SNN_SEQUENCE_LENGTH}/${SNN_SEQUENCE_STRIDE}"
+echo "[B] ann image/tracks: ${ANN_IMAGE_RELPATH} | ${ANN_TRACKS_RELPATH}"
+echo "[B] snn image/tracks/events: ${SNN_IMAGE_RELPATH} | ${SNN_TRACKS_RELPATH} | ${EVENT_RELPATH}"
+echo "[B] dataloader workers: ${NUM_WORKERS} | batch ann/snn: ${ANN_BATCH_SIZE}/${SNN_BATCH_SIZE}"
 
 while true; do
   ann_ckpt="${SAVE_DIR}/vgg11_ssd_ann_dsec_best.pth"
@@ -88,7 +102,15 @@ while true; do
     --dsec-root "$DSEC_ROOT" \
     --train-split "$TRAIN_SPLIT" \
     --val-split "$VAL_SPLIT" \
+    --image-relpath "$ANN_IMAGE_RELPATH" \
+    --tracks-relpath "$ANN_TRACKS_RELPATH" \
     --class-ids "$CLASS_IDS" \
+    --crop-top-px "$ANN_CROP_TOP_PX" \
+    --crop-bottom-px "$ANN_CROP_BOTTOM_PX" \
+    --crop-left-px "$ANN_CROP_LEFT_PX" \
+    --crop-right-px "$ANN_CROP_RIGHT_PX" \
+    --batch-size "$ANN_BATCH_SIZE" \
+    --num-workers "$NUM_WORKERS" \
     --input-height "$INPUT_HEIGHT" \
     --input-width "$INPUT_WIDTH" \
     --epochs "$EPOCHS" \
@@ -104,11 +126,15 @@ while true; do
     --dsec-root "$DSEC_ROOT" \
     --train-split "$TRAIN_SPLIT" \
     --val-split "$VAL_SPLIT" \
+    --image-relpath "$SNN_IMAGE_RELPATH" \
+    --tracks-relpath "$SNN_TRACKS_RELPATH" \
     --class-ids "$CLASS_IDS" \
     --event-source "$EVENT_SOURCE" \
     --event-relpath "$EVENT_RELPATH" \
     --sequence-length "$SNN_SEQUENCE_LENGTH" \
     --sequence-stride "$SNN_SEQUENCE_STRIDE" \
+    --batch-size "$SNN_BATCH_SIZE" \
+    --num-workers "$NUM_WORKERS" \
     --input-height "$INPUT_HEIGHT" \
     --input-width "$INPUT_WIDTH" \
     --epochs "$EPOCHS" \
@@ -127,7 +153,14 @@ while true; do
         --model-type ann \
         --dsec-root "$DSEC_ROOT" \
         --test-splits "$TEST_SPLITS" \
+        --image-relpath "$ANN_IMAGE_RELPATH" \
+        --tracks-relpath "$ANN_TRACKS_RELPATH" \
         --class-ids "$CLASS_IDS" \
+        --crop-top-px "$ANN_CROP_TOP_PX" \
+        --crop-bottom-px "$ANN_CROP_BOTTOM_PX" \
+        --crop-left-px "$ANN_CROP_LEFT_PX" \
+        --crop-right-px "$ANN_CROP_RIGHT_PX" \
+        --num-workers "$NUM_WORKERS" \
         --input-height "$INPUT_HEIGHT" \
         --input-width "$INPUT_WIDTH" \
         --device "$DEVICE" \
@@ -144,11 +177,14 @@ while true; do
         --model-type snn \
         --dsec-root "$DSEC_ROOT" \
         --test-splits "$TEST_SPLITS" \
+        --image-relpath "$SNN_IMAGE_RELPATH" \
+        --tracks-relpath "$SNN_TRACKS_RELPATH" \
         --class-ids "$CLASS_IDS" \
         --event-source "$EVENT_SOURCE" \
         --event-relpath "$EVENT_RELPATH" \
         --sequence-length "$SNN_SEQUENCE_LENGTH" \
         --sequence-stride 1 \
+        --num-workers "$NUM_WORKERS" \
         --input-height "$INPUT_HEIGHT" \
         --input-width "$INPUT_WIDTH" \
         --device "$DEVICE" \

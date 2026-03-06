@@ -136,9 +136,9 @@ def parse_args():
     parser.add_argument("--val-split", type=str, default="val")
     parser.add_argument("--train-sequences", type=str, default="", help="Optional comma-separated sequence names")
     parser.add_argument("--val-sequences", type=str, default="", help="Optional comma-separated sequence names")
-    parser.add_argument("--image-relpath", type=str, default="images/left/rectified")
+    parser.add_argument("--image-relpath", type=str, default="images/left/distorted")
     parser.add_argument("--timestamps-relpath", type=str, default="images/timestamps.txt")
-    parser.add_argument("--tracks-relpath", type=str, default="object_detections/left/tracks_rectified.npy")
+    parser.add_argument("--tracks-relpath", type=str, default="object_detections/left/tracks.npy")
     parser.add_argument("--class-ids", type=str, default="0,1,2,3,4,5,6,7")
     parser.add_argument("--time-mode", type=str, default="nearest", choices=["nearest", "window"])
     parser.add_argument("--window-us", type=int, default=25_000)
@@ -154,6 +154,10 @@ def parse_args():
         action="store_true",
         help="Use color RGB as-is. Default behavior converts input to grayscale then repeats to 3 channels.",
     )
+    parser.add_argument("--crop-top-px", type=int, default=0)
+    parser.add_argument("--crop-bottom-px", type=int, default=0)
+    parser.add_argument("--crop-left-px", type=int, default=0)
+    parser.add_argument("--crop-right-px", type=int, default=0)
 
     # Training
     parser.add_argument("--epochs", type=int, default=100)
@@ -228,6 +232,10 @@ def main():
         max_time_delta_us=max_delta,
         max_frames_per_sequence=args.max_frames_per_sequence,
         force_grayscale=not args.rgb_color,
+        crop_top_px=args.crop_top_px,
+        crop_bottom_px=args.crop_bottom_px,
+        crop_left_px=args.crop_left_px,
+        crop_right_px=args.crop_right_px,
         transform=transform,
     )
     val_dataset = DSECSSD_ANN(
@@ -243,6 +251,10 @@ def main():
         max_time_delta_us=max_delta,
         max_frames_per_sequence=args.max_frames_per_sequence,
         force_grayscale=not args.rgb_color,
+        crop_top_px=args.crop_top_px,
+        crop_bottom_px=args.crop_bottom_px,
+        crop_left_px=args.crop_left_px,
+        crop_right_px=args.crop_right_px,
         transform=transform,
     )
 
