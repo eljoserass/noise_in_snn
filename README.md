@@ -129,7 +129,7 @@ export VAL_SPLIT=val
 bash scripts/night_runs/machine_b_train.sh
 ```
 
-`machine_b_train.sh` and direct `train_*_dsec.py` runs now auto-fall back to `VAL_SPLIT=train` and read val subsequences from `../dsec_data_managing/dsec-det/config/train_val_test_split.yaml` when no physical `data/dsec/val` folder exists.
+`machine_b_train.sh` and direct `train_*_dsec.py` runs now auto-fall back to `VAL_SPLIT=train` and read val subsequences from `config/dsec_train_val_test_split.yaml` when no physical `data/dsec/val` folder exists.
 
 ## Quick Sanity Check (what model sees)
 

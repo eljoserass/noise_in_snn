@@ -182,7 +182,7 @@ def parse_args():
     parser.add_argument(
         "--split-config",
         type=str,
-        default="../dsec_data_managing/dsec-det/config/train_val_test_split.yaml",
+        default="config/dsec_train_val_test_split.yaml",
         help="Optional split config used to resolve val sequences when val dir is absent.",
     )
     parser.add_argument("--train-sequences", type=str, default="", help="Optional comma-separated sequence names")

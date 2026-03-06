@@ -38,6 +38,13 @@ DSEC_CLASS_NAMES = {
     7: "train",
 }
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_SPLIT_CONFIG_CANDIDATES = [
+    _REPO_ROOT / "config" / "dsec_train_val_test_split.yaml",
+    _REPO_ROOT.parent / "dsec_data_managing" / "dsec-det" / "config" / "train_val_test_split.yaml",
+    Path("/workspace/dsec_data_managing/dsec-det/config/train_val_test_split.yaml"),
+]
+
 
 def parse_class_ids(class_ids: str | list[int] | None) -> list[int]:
     if class_ids is None:
@@ -247,6 +254,65 @@ class _SequenceMeta:
 def _discover_sequence_dirs(dsec_root: Path, split: str, sequences: list[str] | None) -> list[Path]:
     split_dir = dsec_root / split
     if not split_dir.exists():
+        # DSEC commonly ships as train/test directories only; val is a subset of train.
+        if split == "val":
+            train_dir = dsec_root / "train"
+            if not train_dir.exists():
+                raise FileNotFoundError(f"Split dir does not exist: {split_dir}")
+
+            if sequences:
+                seq_dirs = [train_dir / name for name in sequences if (train_dir / name).is_dir()]
+                if not seq_dirs:
+                    raise RuntimeError(
+                        "No validation sequence folders found under train for requested --val-sequences: "
+                        f"{sequences}"
+                    )
+                print(
+                    f"[DSECSSD] resolved split=val -> train subset via explicit sequences "
+                    f"(count={len(seq_dirs)})"
+                )
+                return sorted(seq_dirs)
+
+            def read_split_from_yaml(config_path: Path, split_name: str) -> list[str]:
+                lines = config_path.read_text(encoding="utf-8").splitlines()
+                names: list[str] = []
+                in_section = False
+                for raw in lines:
+                    line = raw.rstrip()
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    if not line.startswith(" "):
+                        in_section = stripped == f"{split_name}:"
+                        continue
+                    if in_section and stripped.startswith("- "):
+                        names.append(stripped[2:].strip())
+                return names
+
+            for cfg in _DEFAULT_SPLIT_CONFIG_CANDIDATES:
+                if not cfg.exists():
+                    continue
+                seq_names = read_split_from_yaml(cfg, "val")
+                if not seq_names:
+                    continue
+                seq_dirs = [train_dir / name for name in seq_names if (train_dir / name).is_dir()]
+                if seq_dirs:
+                    missing = len(seq_names) - len(seq_dirs)
+                    print(
+                        f"[DSECSSD] resolved split=val -> train subset from {cfg} "
+                        f"(found={len(seq_dirs)}, missing={missing})"
+                    )
+                    return sorted(seq_dirs)
+
+            # Last fallback to keep long runs alive; caller can still pass explicit sequences.
+            seq_dirs = sorted([p for p in train_dir.iterdir() if p.is_dir()])
+            if seq_dirs:
+                print(
+                    "[DSECSSD] warning: val dir missing and no split config found; "
+                    "falling back to full train directory for validation."
+                )
+                return seq_dirs
+
         raise FileNotFoundError(f"Split dir does not exist: {split_dir}")
 
     if sequences:

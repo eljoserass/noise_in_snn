@@ -20,7 +20,7 @@ Machine B: Train DSEC baselines (resume-safe)
 bash scripts/night_runs/machine_b_train.sh
 ```
 
-If `data/dsec/val` is missing, this script automatically uses `train` as the split root and loads validation subsequences from `../dsec_data_managing/dsec-det/config/train_val_test_split.yaml` (if available).
+If `data/dsec/val` is missing, this script automatically uses `train` as the split root and loads validation subsequences from `config/dsec_train_val_test_split.yaml` (if available).
 
 Machine C: DSEC conversion/noise generation/upload loop
 
