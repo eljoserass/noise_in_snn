@@ -175,6 +175,8 @@ Training-focused details above are the source of truth. Data movement and conver
 
 By default, `machine_a_download.sh` pulls `train,test` (not `val`) because validation is typically defined as a subsequence list inside `train`.
 `machine_c_convert_loop.sh` also supports periodic background uploads via `UPLOAD_INTERVAL_SECS` so partial results are backed up during long runs.
+`machine_c_convert_loop.sh` runs split-specific processing by default: clean-only event simulation on `train,val`, and full corruption/noise + event simulation on `test`.
+Set `VALIDATE_RECTIFICATION=1` only when needed; default `0` avoids expensive repeated validation during long loops.
 
 For operational variables and loop behavior, see:
 

@@ -51,7 +51,8 @@ def parse_levels(levels: str) -> list[int]:
 
 
 def parse_list(values: str) -> list[str]:
-    return [x.strip() for x in values.split(",") if x.strip()]
+    parsed = [x.strip() for x in values.split(",") if x.strip()]
+    return [x for x in parsed if x.lower() not in {"none", "off", "null"}]
 
 
 def sorted_pngs(folder: Path, max_frames: int | None = None) -> list[Path]:

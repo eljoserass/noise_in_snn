@@ -28,6 +28,13 @@ Machine C: DSEC conversion/noise generation/upload loop
 bash scripts/night_runs/machine_c_convert_loop.sh
 ```
 
+Default Machine C policy now matches the DSEC plan:
+
+- `train,val`: grayscale + clean v2e only.
+- `test`: grayscale + imagecorruptions (all severities) + v2e on corruptions + manual v2e noise sweeps.
+- Upload default is `UPLOAD_SCOPE=all_processed`.
+- `VALIDATE_RECTIFICATION=0` by default (set to `1` to run rectification montage checks in-loop).
+
 Legacy TUMTraf Pipeline
 -----------------------
 

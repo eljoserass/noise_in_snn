@@ -53,17 +53,24 @@ INSTALL_V2E_DEPS="${INSTALL_V2E_DEPS:-0}"  # 0 recommended on py3.12+/linux
 V2E_DEPS_MODE="${V2E_DEPS_MODE:-minimal}"  # minimal | full
 
 DSEC_ROOT="${DSEC_ROOT:-data/dsec}"
-SPLITS="${SPLITS:-train,test}"
+# Split-specific processing policy:
+# - train/val: grayscale + clean v2e only
+# - test: grayscale + imagecorruptions + v2e on corruptions + v2e manual noise sweeps
+TRAINVAL_SPLITS="${TRAINVAL_SPLITS:-train,val}"
+TEST_SPLITS="${TEST_SPLITS:-test}"
 JOBS="${JOBS:-2}"
 POLL_SECS="${POLL_SECS:-900}"
 
 # v2e / corruption settings
-SEVERITIES="${SEVERITIES:-1,2,3,4,5}"
-CORRUPTION_SUBSET="${CORRUPTION_SUBSET:-all}"
-V2E_MODES="${V2E_MODES:-clean}"
-MANUAL_V2E_NOISES="${MANUAL_V2E_NOISES:-shot_noise,leak_noise,threshold_jitter,bandwidth_limit,refractory,photoreceptor_noise}"
+TRAINVAL_V2E_MODES="${TRAINVAL_V2E_MODES:-clean}"
+TRAINVAL_MANUAL_V2E_NOISES="${TRAINVAL_MANUAL_V2E_NOISES:-none}"
+TEST_SEVERITIES="${TEST_SEVERITIES:-${SEVERITIES:-1,2,3,4,5}}"
+TEST_CORRUPTION_SUBSET="${TEST_CORRUPTION_SUBSET:-${CORRUPTION_SUBSET:-all}}"
+TEST_V2E_MODES="${TEST_V2E_MODES:-${V2E_MODES:-clean,noisy}}"
+TEST_MANUAL_V2E_NOISES="${TEST_MANUAL_V2E_NOISES:-${MANUAL_V2E_NOISES:-shot_noise,leak_noise,threshold_jitter,bandwidth_limit,refractory,photoreceptor_noise}}"
 INPUT_FPS="${INPUT_FPS:-20}"
 V2E_EXPOSURE_DURATION="${V2E_EXPOSURE_DURATION:-0.005}"
+VALIDATE_RECTIFICATION="${VALIDATE_RECTIFICATION:-0}"
 
 # Optional upload of generated artifacts
 ENABLE_UPLOAD="${ENABLE_UPLOAD:-1}"
@@ -185,18 +192,45 @@ fi
 
 echo "[C] conversion loop started"
 echo "[C] dsec root: ${DSEC_ROOT}"
-echo "[C] splits: ${SPLITS} | jobs=${JOBS}"
-echo "[C] severities: ${SEVERITIES} | corruption subset: ${CORRUPTION_SUBSET}"
+echo "[C] train/val splits: ${TRAINVAL_SPLITS} (clean v2e only)"
+echo "[C] test splits: ${TEST_SPLITS} (full corruption + noisy v2e sweeps)"
+echo "[C] test severities: ${TEST_SEVERITIES} | corruption subset: ${TEST_CORRUPTION_SUBSET}"
+echo "[C] train/val v2e modes: ${TRAINVAL_V2E_MODES} | manual noises: ${TRAINVAL_MANUAL_V2E_NOISES}"
+echo "[C] test v2e modes: ${TEST_V2E_MODES} | manual noises: ${TEST_MANUAL_V2E_NOISES}"
+echo "[C] jobs: ${JOBS}"
+echo "[C] validate rectification: ${VALIDATE_RECTIFICATION}"
 echo "[C] v2e script: ${V2E_SCRIPT}"
+
+run_batch() {
+  local label="$1"
+  local splits="$2"
+  local extra_args="$3"
+  if [ -z "${splits}" ]; then
+    echo "[C] ${label}: no splits configured, skipping"
+    return 0
+  fi
+  echo "[C] ${label}: splits=${splits}"
+  python scripts/dsec_batch_pipeline.py \
+    --dsec-root "${DSEC_ROOT}" \
+    --splits "${splits}" \
+    --jobs "${JOBS}" \
+    --extra-args "${extra_args}"
+}
 
 while true; do
   echo "[C] batch run: $(date -Iseconds)"
-  if ! python scripts/dsec_batch_pipeline.py \
-    --dsec-root "${DSEC_ROOT}" \
-    --splits "${SPLITS}" \
-    --jobs "${JOBS}" \
-    --extra-args "--validate-rectification --run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --severity-levels ${SEVERITIES} --corruption-subset ${CORRUPTION_SUBSET} --v2e-modes ${V2E_MODES} --manual-v2e-noises ${MANUAL_V2E_NOISES} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"; then
-    echo "[C] batch warning: one or more sequences failed; continuing loop"
+  rectify_arg=""
+  if [ "${VALIDATE_RECTIFICATION}" = "1" ]; then
+    rectify_arg="--validate-rectification"
+  fi
+  trainval_extra_args="${rectify_arg} --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-modes ${TRAINVAL_V2E_MODES} --manual-v2e-noises ${TRAINVAL_MANUAL_V2E_NOISES} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+  test_extra_args="${rectify_arg} --run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --severity-levels ${TEST_SEVERITIES} --corruption-subset ${TEST_CORRUPTION_SUBSET} --v2e-modes ${TEST_V2E_MODES} --manual-v2e-noises ${TEST_MANUAL_V2E_NOISES} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+
+  if ! run_batch "train/val pass" "${TRAINVAL_SPLITS}" "${trainval_extra_args}"; then
+    echo "[C] batch warning: train/val pass failed for one or more sequences; continuing"
+  fi
+  if ! run_batch "test pass" "${TEST_SPLITS}" "${test_extra_args}"; then
+    echo "[C] batch warning: test pass failed for one or more sequences; continuing"
   fi
 
   if [ "$ENABLE_UPLOAD" = "1" ]; then
