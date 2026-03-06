@@ -25,7 +25,8 @@ V2E_DIR="${V2E_DIR:-tools/v2e}"
 V2E_SCRIPT="${V2E_SCRIPT:-${V2E_DIR}/v2e.py}"
 V2E_REF="${V2E_REF:-}"      # optional git ref/commit/tag
 PULL_V2E="${PULL_V2E:-0}"    # set 1 to pull latest if repo already exists
-INSTALL_V2E_DEPS="${INSTALL_V2E_DEPS:-1}"
+INSTALL_V2E_DEPS="${INSTALL_V2E_DEPS:-0}"  # 0 recommended on py3.12+/linux
+V2E_DEPS_MODE="${V2E_DEPS_MODE:-minimal}"  # minimal | full
 
 DSEC_ROOT="${DSEC_ROOT:-data/dsec}"
 SPLITS="${SPLITS:-train,val,test}"
@@ -64,8 +65,18 @@ if [ "$BOOTSTRAP_V2E" = "1" ]; then
   fi
 
   if [ "$INSTALL_V2E_DEPS" = "1" ] && [ -f "${V2E_DIR}/requirements.txt" ]; then
-    echo "[C] installing v2e requirements"
-    pip install -r "${V2E_DIR}/requirements.txt"
+    if [ "${V2E_DEPS_MODE}" = "full" ]; then
+      echo "[C] installing v2e requirements (full mode, linux-filtered)"
+      tmp_req="$(mktemp)"
+      grep -Ev '^(pywin32|pywinpty|wincertstore|pyreadline|wxPython)\b' "${V2E_DIR}/requirements.txt" > "${tmp_req}"
+      if ! pip install -r "${tmp_req}"; then
+        echo "[C] warning: full v2e requirements install failed; continuing."
+      fi
+      rm -f "${tmp_req}"
+    else
+      echo "[C] installing minimal v2e runtime deps"
+      pip install "numpy<2.0" scipy opencv-python tqdm h5py || true
+    fi
   fi
 fi
 
