@@ -18,6 +18,16 @@ else
   source .venv/bin/activate
 fi
 
+# imagecorruptions currently imports pkg_resources; ensure compatible setuptools.
+if ! python - <<'PY' >/dev/null 2>&1
+import pkg_resources  # noqa: F401
+import imagecorruptions  # noqa: F401
+PY
+then
+  echo "[C] fixing python deps for imagecorruptions/pkg_resources compatibility"
+  pip install "setuptools<81" imagecorruptions
+fi
+
 # v2e bootstrap settings (for fresh machines)
 BOOTSTRAP_V2E="${BOOTSTRAP_V2E:-1}"
 V2E_REPO_URL="${V2E_REPO_URL:-https://github.com/SensorsINI/v2e.git}"

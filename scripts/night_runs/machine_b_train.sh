@@ -34,12 +34,34 @@ SNN_SEQUENCE_LENGTH="${SNN_SEQUENCE_LENGTH:-8}"
 SNN_SEQUENCE_STRIDE="${SNN_SEQUENCE_STRIDE:-8}"
 EVENT_SOURCE="${EVENT_SOURCE:-auto}"
 EVENT_RELPATH="${EVENT_RELPATH:-events/left/events.h5}"
+WANDB_PROJECT="${WANDB_PROJECT:-dsec_clean_baselines}"
+WANDB_RUN_NAME_ANN="${WANDB_RUN_NAME_ANN:-}"
+WANDB_RUN_NAME_SNN="${WANDB_RUN_NAME_SNN:-}"
+WANDB_RUN_NAME_EVAL_ANN="${WANDB_RUN_NAME_EVAL_ANN:-}"
+WANDB_RUN_NAME_EVAL_SNN="${WANDB_RUN_NAME_EVAL_SNN:-}"
 
 mkdir -p "$SAVE_DIR"
 
 wandb_flag=""
 if [ "$USE_WANDB" = "1" ]; then
   wandb_flag="--wandb"
+fi
+
+ann_run_name_args=()
+snn_run_name_args=()
+eval_ann_run_name_args=()
+eval_snn_run_name_args=()
+if [ -n "$WANDB_RUN_NAME_ANN" ]; then
+  ann_run_name_args=(--wandb-run-name "$WANDB_RUN_NAME_ANN")
+fi
+if [ -n "$WANDB_RUN_NAME_SNN" ]; then
+  snn_run_name_args=(--wandb-run-name "$WANDB_RUN_NAME_SNN")
+fi
+if [ -n "$WANDB_RUN_NAME_EVAL_ANN" ]; then
+  eval_ann_run_name_args=(--wandb-run-name "$WANDB_RUN_NAME_EVAL_ANN")
+fi
+if [ -n "$WANDB_RUN_NAME_EVAL_SNN" ]; then
+  eval_snn_run_name_args=(--wandb-run-name "$WANDB_RUN_NAME_EVAL_SNN")
 fi
 
 echo "[B] training loop started"
@@ -72,6 +94,8 @@ while true; do
     --epochs "$EPOCHS" \
     --save-dir "$SAVE_DIR" \
     --device "$DEVICE" \
+    --wandb-project "$WANDB_PROJECT" \
+    "${ann_run_name_args[@]}" \
     $wandb_flag \
     "${ann_resume[@]}"
 
@@ -90,6 +114,8 @@ while true; do
     --epochs "$EPOCHS" \
     --save-dir "$SAVE_DIR" \
     --device "$DEVICE" \
+    --wandb-project "$WANDB_PROJECT" \
+    "${snn_run_name_args[@]}" \
     $wandb_flag \
     "${snn_resume[@]}"
 
@@ -106,6 +132,8 @@ while true; do
         --input-width "$INPUT_WIDTH" \
         --device "$DEVICE" \
         --output-dir "${SAVE_DIR}/eval_ann_dsec" \
+        --wandb-project "$WANDB_PROJECT" \
+        "${eval_ann_run_name_args[@]}" \
         $wandb_flag
     fi
 
@@ -125,6 +153,8 @@ while true; do
         --input-width "$INPUT_WIDTH" \
         --device "$DEVICE" \
         --output-dir "${SAVE_DIR}/eval_snn_dsec" \
+        --wandb-project "$WANDB_PROJECT" \
+        "${eval_snn_run_name_args[@]}" \
         $wandb_flag
     fi
   fi

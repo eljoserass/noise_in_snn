@@ -10,6 +10,7 @@ wandb
 weave
 boto3
 imagecorruptions
+setuptools<81
 
 
 hdf5plugin
