@@ -238,6 +238,29 @@ PY
 
 patch_v2e_optional_aedat4_import
 
+patch_v2e_numpy_aliases() {
+  python - "${V2E_DIR}" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+patched = []
+for path in root.rglob("*.py"):
+    text = path.read_text(encoding="utf-8")
+    if "np.float" not in text:
+        continue
+    new_text = text.replace("np.float", "float")
+    if new_text != text:
+        path.write_text(new_text, encoding="utf-8")
+        patched.append(str(path))
+
+for p in patched:
+    print(f"[C] patched numpy alias in {p}")
+PY
+}
+
+patch_v2e_numpy_aliases
+
 # Ensure lightweight v2e runtime deps needed for folder-input conversion.
 if [ "${ENSURE_V2E_RUNTIME_DEPS}" = "1" ]; then
   if ! python - <<'PY' >/dev/null 2>&1
