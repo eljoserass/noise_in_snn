@@ -66,6 +66,8 @@ DSEC_ROOT="${DSEC_ROOT:-data/dsec}"
 # - test: grayscale + imagecorruptions + v2e on corruptions + v2e manual noise sweeps
 TRAINVAL_SPLITS="${TRAINVAL_SPLITS:-train}"
 TEST_SPLITS="${TEST_SPLITS:-test}"
+TRAINVAL_SEQUENCES="${TRAINVAL_SEQUENCES:-}"
+TEST_SEQUENCES="${TEST_SEQUENCES:-}"
 JOBS="${JOBS:-2}"
 POLL_SECS="${POLL_SECS:-900}"
 
@@ -229,7 +231,9 @@ fi
 echo "[C] conversion loop started"
 echo "[C] dsec root: ${DSEC_ROOT}"
 echo "[C] train splits: ${TRAINVAL_SPLITS} (clean v2e only; includes val subset sequences)"
+echo "[C] train sequences: ${TRAINVAL_SEQUENCES:-<all in selected splits>}"
 echo "[C] test splits: ${TEST_SPLITS} (full corruption + noisy v2e sweeps)"
+echo "[C] test sequences: ${TEST_SEQUENCES:-<all in selected splits>}"
 echo "[C] test severities: ${TEST_SEVERITIES} | corruption subset: ${TEST_CORRUPTION_SUBSET}"
 echo "[C] train/val v2e modes: ${TRAINVAL_V2E_MODES} | manual noises: ${TRAINVAL_MANUAL_V2E_NOISES}"
 echo "[C] test v2e modes: ${TEST_V2E_MODES} | manual noises: ${TEST_MANUAL_V2E_NOISES}"
@@ -240,17 +244,24 @@ echo "[C] v2e script: ${V2E_SCRIPT}"
 run_batch() {
   local label="$1"
   local splits="$2"
-  local extra_args="$3"
+  local sequences="$3"
+  local extra_args="$4"
   if [ -z "${splits}" ]; then
     echo "[C] ${label}: no splits configured, skipping"
     return 0
   fi
-  echo "[C] ${label}: splits=${splits}"
-  python scripts/dsec_batch_pipeline.py \
-    --dsec-root "${DSEC_ROOT}" \
-    --splits "${splits}" \
-    --jobs "${JOBS}" \
-    --extra-args "${extra_args}"
+  local -a cmd=(
+    python scripts/dsec_batch_pipeline.py
+    --dsec-root "${DSEC_ROOT}"
+    --splits "${splits}"
+    --jobs "${JOBS}"
+  )
+  if [ -n "${sequences}" ]; then
+    cmd+=(--sequences "${sequences}")
+  fi
+  cmd+=(--extra-args "${extra_args}")
+  echo "[C] ${label}: splits=${splits} sequences=${sequences:-<all>}"
+  "${cmd[@]}"
 }
 
 while true; do
@@ -262,10 +273,10 @@ while true; do
   trainval_extra_args="${rectify_arg} --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-modes ${TRAINVAL_V2E_MODES} --manual-v2e-noises ${TRAINVAL_MANUAL_V2E_NOISES} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
   test_extra_args="${rectify_arg} --run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --severity-levels ${TEST_SEVERITIES} --corruption-subset ${TEST_CORRUPTION_SUBSET} --v2e-modes ${TEST_V2E_MODES} --manual-v2e-noises ${TEST_MANUAL_V2E_NOISES} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
 
-  if ! run_batch "train/val pass" "${TRAINVAL_SPLITS}" "${trainval_extra_args}"; then
+  if ! run_batch "train/val pass" "${TRAINVAL_SPLITS}" "${TRAINVAL_SEQUENCES}" "${trainval_extra_args}"; then
     echo "[C] batch warning: train/val pass failed for one or more sequences; continuing"
   fi
-  if ! run_batch "test pass" "${TEST_SPLITS}" "${test_extra_args}"; then
+  if ! run_batch "test pass" "${TEST_SPLITS}" "${TEST_SEQUENCES}" "${test_extra_args}"; then
     echo "[C] batch warning: test pass failed for one or more sequences; continuing"
   fi
 
