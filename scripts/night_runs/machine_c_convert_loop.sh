@@ -172,10 +172,12 @@ patch_v2e_gui_imports() {
   python - "${utils_path}" <<'PY'
 from pathlib import Path
 import sys
+import re
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-guard_block = """try:
+guard_block = """import glob
+try:
     import easygui
 except Exception:
     easygui = None
@@ -183,13 +185,19 @@ try:
     from tkinter import filedialog
 except Exception:
     filedialog = None
+from numba import njit
 """
 
-if "from tkinter import filedialog" in text and "except Exception:\n    filedialog = None" not in text:
-    text = text.replace("import easygui\nfrom tkinter import filedialog\n", guard_block)
-    text = text.replace("from tkinter import filedialog\n", "try:\n    from tkinter import filedialog\nexcept Exception:\n    filedialog = None\n")
-    path.write_text(text, encoding="utf-8")
-    print(f"[C] patched headless GUI imports in {path}")
+pattern = re.compile(
+    r"import glob\s+.*?from numba import njit\s+",
+    flags=re.DOTALL,
+)
+
+new_text, n = pattern.subn(guard_block, text, count=1)
+if n:
+    if new_text != text:
+        path.write_text(new_text, encoding="utf-8")
+        print(f"[C] patched headless GUI imports in {path}")
 PY
 }
 
