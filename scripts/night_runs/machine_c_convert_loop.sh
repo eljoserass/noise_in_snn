@@ -203,6 +203,41 @@ PY
 
 patch_v2e_gui_imports
 
+patch_v2e_optional_aedat4_import() {
+  local emulator_path="${V2E_DIR}/v2ecore/emulator.py"
+  if [ ! -f "${emulator_path}" ]; then
+    return 0
+  fi
+  python - "${emulator_path}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = """from v2ecore.output.ae_text_output import DVSTextOutput
+from v2ecore.output.aedat2_output import AEDat2Output
+from v2ecore.output.aedat4_output import AEDat4Output
+from v2ecore.v2e_utils import checkAddSuffix, v2e_quit, video_writer
+"""
+new = """from v2ecore.output.ae_text_output import DVSTextOutput
+from v2ecore.output.aedat2_output import AEDat2Output
+try:
+    from v2ecore.output.aedat4_output import AEDat4Output
+    _AEDAT4_IMPORT_ERROR = None
+except Exception as _e:
+    AEDat4Output = None
+    _AEDAT4_IMPORT_ERROR = _e
+from v2ecore.v2e_utils import checkAddSuffix, v2e_quit, video_writer
+"""
+
+if old in text:
+    path.write_text(text.replace(old, new), encoding="utf-8")
+    print(f"[C] patched optional AEDAT4 import in {path}")
+PY
+}
+
+patch_v2e_optional_aedat4_import
+
 # Ensure lightweight v2e runtime deps needed for folder-input conversion.
 if [ "${ENSURE_V2E_RUNTIME_DEPS}" = "1" ]; then
   if ! python - <<'PY' >/dev/null 2>&1
