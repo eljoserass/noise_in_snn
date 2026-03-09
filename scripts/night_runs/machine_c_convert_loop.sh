@@ -144,6 +144,26 @@ if [ ! -f "${V2E_SCRIPT}" ]; then
   exit 1
 fi
 
+ensure_headless_easygui_stub() {
+  local stub_path="${V2E_DIR}/easygui.py"
+  if [ -f "${stub_path}" ]; then
+    return 0
+  fi
+  echo "[C] creating headless easygui stub at ${stub_path}"
+  mkdir -p "$(dirname "${stub_path}")"
+  cat > "${stub_path}" <<'PY'
+"""Headless stub for machine-C server runs."""
+
+def fileopenbox(*args, **kwargs):
+    raise RuntimeError(
+        "easygui file dialogs are disabled in headless mode. "
+        "Run v2e with --input <video_or_folder>."
+    )
+PY
+}
+
+ensure_headless_easygui_stub
+
 # Ensure lightweight v2e runtime deps needed for folder-input conversion.
 if [ "${ENSURE_V2E_RUNTIME_DEPS}" = "1" ]; then
   if ! python - <<'PY' >/dev/null 2>&1
