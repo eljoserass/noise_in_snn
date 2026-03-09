@@ -164,6 +164,37 @@ PY
 
 ensure_headless_easygui_stub
 
+patch_v2e_gui_imports() {
+  local utils_path="${V2E_DIR}/v2ecore/v2e_utils.py"
+  if [ ! -f "${utils_path}" ]; then
+    return 0
+  fi
+  python - "${utils_path}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+guard_block = """try:
+    import easygui
+except Exception:
+    easygui = None
+try:
+    from tkinter import filedialog
+except Exception:
+    filedialog = None
+"""
+
+if "from tkinter import filedialog" in text and "except Exception:\n    filedialog = None" not in text:
+    text = text.replace("import easygui\nfrom tkinter import filedialog\n", guard_block)
+    text = text.replace("from tkinter import filedialog\n", "try:\n    from tkinter import filedialog\nexcept Exception:\n    filedialog = None\n")
+    path.write_text(text, encoding="utf-8")
+    print(f"[C] patched headless GUI imports in {path}")
+PY
+}
+
+patch_v2e_gui_imports
+
 # Ensure lightweight v2e runtime deps needed for folder-input conversion.
 if [ "${ENSURE_V2E_RUNTIME_DEPS}" = "1" ]; then
   if ! python - <<'PY' >/dev/null 2>&1
