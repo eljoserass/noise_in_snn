@@ -198,19 +198,33 @@ def run_upload(
         manifest.append((path, key))
 
     print(f"upload manifest: {len(manifest)} files")
+
+    # Pre-fetch remote listing so we can skip without per-file HEAD requests.
+    remote_sizes: dict[str, int] = {}
+    if skip_existing:
+        print("listing remote objects for skip check...")
+        for obj in iter_remote_objects(s3, bucket, remote_prefix):
+            remote_sizes[obj["Key"]] = int(obj["Size"])
+        print(f"remote listing: {len(remote_sizes)} objects")
+
     done = 0
     skipped = 0
+    upload_manifest: list[tuple[Path, str]] = []
+    for path, key in manifest:
+        if skip_existing and key in remote_sizes and path.stat().st_size == remote_sizes[key]:
+            skipped += 1
+            print(f"skip {key}")
+            continue
+        upload_manifest.append((path, key))
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
-            pool.submit(upload_one, s3, bucket, path, key, skip_existing)
-            for path, key in manifest
+            pool.submit(upload_one, s3, bucket, path, key, False)
+            for path, key in upload_manifest
         ]
         for fut in as_completed(futures):
             msg = fut.result()
-            if msg.startswith("skip"):
-                skipped += 1
-            else:
-                done += 1
+            done += 1
             print(msg)
     print(f"upload complete: done={done}, skipped={skipped}")
 
