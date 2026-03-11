@@ -64,10 +64,11 @@ def sorted_pngs(folder: Path, max_frames: int | None = None) -> list[Path]:
 
 def convert_to_grayscale(src_frames: list[Path], out_dir: Path, skip_existing: bool) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
+    existing = set(p.name for p in out_dir.iterdir()) if skip_existing else set()
     written = 0
     for src in src_frames:
         dst = out_dir / src.name
-        if skip_existing and dst.exists():
+        if existing and src.name in existing:
             continue
         img = cv2.imread(str(src), cv2.IMREAD_COLOR)
         if img is None:
@@ -95,12 +96,13 @@ def apply_imagecorruptions(
             out_dir = out_parent / f"{src_tag}_{cname}_s{sev}"
             out_dir.mkdir(parents=True, exist_ok=True)
             out_dirs[(cname, sev)] = out_dir
+            existing = set(p.name for p in out_dir.iterdir()) if skip_existing else set()
             written = 0
             failed = False
             error_msg = ""
             for src in src_frames:
                 dst = out_dir / src.name
-                if skip_existing and dst.exists():
+                if existing and src.name in existing:
                     continue
                 img_bgr = cv2.imread(str(src), cv2.IMREAD_COLOR)
                 if img_bgr is None:
