@@ -242,14 +242,21 @@ patch_v2e_numpy_aliases() {
   python - "${V2E_DIR}" <<'PY'
 from pathlib import Path
 import sys
+import re
 
 root = Path(sys.argv[1])
 patched = []
 for path in root.rglob("*.py"):
     text = path.read_text(encoding="utf-8")
-    if "np.float" not in text:
-        continue
-    new_text = text.replace("np.float", "float")
+    new_text = text
+
+    # Repair earlier accidental replacements like dtype=float64.
+    new_text = re.sub(r'dtype\s*=\s*float(16|32|64)\b', r'dtype=np.float\1', new_text)
+    new_text = re.sub(r'astype\(\s*float(16|32|64)\s*\)', r'astype(np.float\1)', new_text)
+
+    # Replace only deprecated alias np.float (not np.float32 / np.float64).
+    new_text = re.sub(r'\bnp\.float\b', 'float', new_text)
+
     if new_text != text:
         path.write_text(new_text, encoding="utf-8")
         patched.append(str(path))

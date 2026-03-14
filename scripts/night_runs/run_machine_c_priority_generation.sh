@@ -26,6 +26,7 @@ V2E_EXPOSURE_DURATION="${V2E_EXPOSURE_DURATION:-0.005}"
 BOOTSTRAP_ENV="${BOOTSTRAP_ENV:-1}"
 VENV_DIR="${VENV_DIR:-.venv_machine_c}"
 INSTALL_REQUIREMENTS="${INSTALL_REQUIREMENTS:-1}"
+REPAIR_V2E_NUMPY_ALIASES="${REPAIR_V2E_NUMPY_ALIASES:-1}"
 
 # Ordered priority list. Example override:
 # PHASES="clean,native_core,weather,blur,digital"
@@ -123,6 +124,40 @@ PY
     echo "[setup] installing missing runtime deps (opencv/imagecorruptions)" | tee -a "${RUN_LOG_DIR}/summary.log"
     pip install opencv-python imagecorruptions >>"${RUN_LOG_DIR}/setup.log" 2>&1
   fi
+}
+
+repair_v2e_numpy_aliases() {
+  if [ "${REPAIR_V2E_NUMPY_ALIASES}" != "1" ]; then
+    return 0
+  fi
+  if [ ! -f "${V2E_SCRIPT}" ]; then
+    return 0
+  fi
+
+  python3 - "${V2E_SCRIPT}" <<'PY' >>"${RUN_LOG_DIR}/setup.log" 2>&1
+from pathlib import Path
+import re
+import sys
+
+v2e_script = Path(sys.argv[1]).resolve()
+root = v2e_script.parent
+patched = []
+for path in root.rglob("*.py"):
+    text = path.read_text(encoding="utf-8")
+    new = text
+    new = re.sub(r'dtype\s*=\s*float(16|32|64)\b', r'dtype=np.float\1', new)
+    new = re.sub(r'astype\(\s*float(16|32|64)\s*\)', r'astype(np.float\1)', new)
+    new = re.sub(r'\bnp\.float\b', 'float', new)
+    if new != text:
+        path.write_text(new, encoding="utf-8")
+        patched.append(str(path))
+
+print(f"[setup] v2e numpy alias repair patched_files={len(patched)}")
+for p in patched[:30]:
+    print(f"[setup] patched: {p}")
+if len(patched) > 30:
+    print(f"[setup] ... and {len(patched)-30} more")
+PY
 }
 
 prune_invalid_events_for_sequence() {
@@ -350,6 +385,7 @@ if [ ! -d "${DSEC_ROOT}/${SPLIT}" ]; then
 fi
 
 bootstrap_env
+repair_v2e_numpy_aliases
 
 mapfile -t all_sequences < <(discover_sequences "${DSEC_ROOT}" "${SPLIT}")
 if [ "${#all_sequences[@]}" -eq 0 ]; then
@@ -411,6 +447,7 @@ RUN_SEQUENCES_CSV="$(join_by_comma "${selected_sequences[@]}")"
   echo "upload_workers=${UPLOAD_WORKERS}"
   echo "bootstrap_env=${BOOTSTRAP_ENV}"
   echo "venv_dir=${VENV_DIR}"
+  echo "repair_v2e_numpy_aliases=${REPAIR_V2E_NUMPY_ALIASES}"
   echo "prune_invalid_events=${PRUNE_INVALID_EVENTS}"
   echo "min_event_rows=${MIN_EVENT_ROWS}"
 } | tee -a "${RUN_LOG_DIR}/summary.log"
