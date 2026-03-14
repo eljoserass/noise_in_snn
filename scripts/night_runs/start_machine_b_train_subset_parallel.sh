@@ -12,6 +12,7 @@ VENV_DIR="${VENV_DIR:-${VENV_BASENAME_DEFAULT}}"
 CREATE_NEW_VENV="${CREATE_NEW_VENV:-1}"      # 1 = always create a fresh venv without deleting old ones
 INSTALL_REQUIREMENTS="${INSTALL_REQUIREMENTS:-1}"
 REQUIRE_CUDA="${REQUIRE_CUDA:-1}"            # 1 = fail if CUDA not available
+REINSTALL_TORCH="${REINSTALL_TORCH:-1}"      # 1 = force reinstall torch each launch
 
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
 TORCH_PACKAGES="${TORCH_PACKAGES:-torch torchvision torchaudio}"
@@ -54,6 +55,8 @@ WANDB_PROJECT_ANN="${WANDB_PROJECT_ANN:-dsec_subset_ann}"
 WANDB_PROJECT_SNN="${WANDB_PROJECT_SNN:-dsec_subset_snn_sim}"
 WANDB_RUN_NAME_ANN="${WANDB_RUN_NAME_ANN:-}"
 WANDB_RUN_NAME_SNN="${WANDB_RUN_NAME_SNN:-}"
+RUN_ANN="${RUN_ANN:-1}"
+RUN_SNN="${RUN_SNN:-1}"
 
 parse_csv() {
   local v="$1"
@@ -63,6 +66,11 @@ parse_csv() {
   fi
   tr ',' '\n' <<< "$v" | sed '/^$/d'
 }
+
+if [ "${RUN_ANN}" != "1" ] && [ "${RUN_SNN}" != "1" ]; then
+  echo "ERROR: both RUN_ANN and RUN_SNN are disabled." | tee -a "${ENV_LOG_FILE}"
+  exit 1
+fi
 
 if [ "${CREATE_NEW_VENV}" = "1" ] && [ -d "${VENV_DIR}" ]; then
   stamp="$(date +%Y%m%d_%H%M%S)"
@@ -92,9 +100,13 @@ if [ "${INSTALL_REQUIREMENTS}" = "1" ]; then
   pip install -r requirements.txt >>"${ENV_LOG_FILE}" 2>&1
 fi
 
-echo "[setup] reinstalling torch packages from ${TORCH_INDEX_URL}" | tee -a "${ENV_LOG_FILE}"
-# shellcheck disable=SC2086
-pip install --force-reinstall --no-cache-dir --index-url "${TORCH_INDEX_URL}" ${TORCH_PACKAGES} >>"${ENV_LOG_FILE}" 2>&1
+if [ "${REINSTALL_TORCH}" = "1" ]; then
+  echo "[setup] reinstalling torch packages from ${TORCH_INDEX_URL}" | tee -a "${ENV_LOG_FILE}"
+  # shellcheck disable=SC2086
+  pip install --force-reinstall --no-cache-dir --index-url "${TORCH_INDEX_URL}" ${TORCH_PACKAGES} >>"${ENV_LOG_FILE}" 2>&1
+else
+  echo "[setup] skipping torch reinstall (REINSTALL_TORCH=0)" | tee -a "${ENV_LOG_FILE}"
+fi
 
 python - "${REQUIRE_CUDA}" <<'PY' | tee -a "${ENV_LOG_FILE}"
 import sys
@@ -111,7 +123,7 @@ PY
 
 mkdir -p "${ANN_SAVE_DIR}" "${SNN_SAVE_DIR}"
 
-if [ "${CHECK_SIM_EVENTS}" = "1" ]; then
+if [ "${RUN_SNN}" = "1" ] && [ "${CHECK_SIM_EVENTS}" = "1" ]; then
   missing=0
   checked=0
   while IFS= read -r seq; do
@@ -227,19 +239,33 @@ if [ "${ENABLE_WANDB}" = "1" ]; then
   fi
 fi
 
-echo "[launch] ANN on GPU ${ANN_GPU} -> ${ANN_LOG_FILE}"
-nohup env CUDA_VISIBLE_DEVICES="${ANN_GPU}" "${ann_cmd[@]}" >"${ANN_LOG_FILE}" 2>&1 &
-ann_pid=$!
+ann_pid=""
+if [ "${RUN_ANN}" = "1" ]; then
+  echo "[launch] ANN on GPU ${ANN_GPU} -> ${ANN_LOG_FILE}"
+  nohup env CUDA_VISIBLE_DEVICES="${ANN_GPU}" "${ann_cmd[@]}" >"${ANN_LOG_FILE}" 2>&1 &
+  ann_pid=$!
+fi
 
-echo "[launch] SNN(sim) on GPU ${SNN_GPU} -> ${SNN_LOG_FILE}"
-nohup env CUDA_VISIBLE_DEVICES="${SNN_GPU}" "${snn_cmd[@]}" >"${SNN_LOG_FILE}" 2>&1 &
-snn_pid=$!
+snn_pid=""
+if [ "${RUN_SNN}" = "1" ]; then
+  echo "[launch] SNN(sim) on GPU ${SNN_GPU} -> ${SNN_LOG_FILE}"
+  nohup env CUDA_VISIBLE_DEVICES="${SNN_GPU}" "${snn_cmd[@]}" >"${SNN_LOG_FILE}" 2>&1 &
+  snn_pid=$!
+fi
 
-echo "ann_pid=${ann_pid}"
-echo "snn_pid=${snn_pid}"
+if [ -n "${ann_pid}" ]; then
+  echo "ann_pid=${ann_pid}"
+fi
+if [ -n "${snn_pid}" ]; then
+  echo "snn_pid=${snn_pid}"
+fi
 echo "venv_dir=${VENV_DIR}"
 echo "env_log=${ENV_LOG_FILE}"
-echo "ann_log=${ANN_LOG_FILE}"
-echo "snn_log=${SNN_LOG_FILE}"
-echo "tail -f ${ANN_LOG_FILE}"
-echo "tail -f ${SNN_LOG_FILE}"
+if [ "${RUN_ANN}" = "1" ]; then
+  echo "ann_log=${ANN_LOG_FILE}"
+  echo "tail -f ${ANN_LOG_FILE}"
+fi
+if [ "${RUN_SNN}" = "1" ]; then
+  echo "snn_log=${SNN_LOG_FILE}"
+  echo "tail -f ${SNN_LOG_FILE}"
+fi
