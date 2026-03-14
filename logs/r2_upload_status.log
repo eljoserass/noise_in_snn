@@ -1,0 +1,26 @@
+== R2 upload status ==
+bucket=neuromorph-noise-data
+prefix=dsec_processed
+env_file=../dsec_data_managing/.env
+
+focused train+val files: 28/28 (100.0%)
+focused subset status: COMPLETE
+
+== test sequence breakdown ==
+sequence                 rgb_corr_dirs clean noisy corr_clean corr_noisy native total_events
+interlaken_00_a                    75     1     0          0          0      0            1
+interlaken_00_b                    75     0     0          0          0      0            0
+interlaken_01_a                    75     0     0          0          0      0            0
+thun_01_a                          75     0     0          0          0      0            0
+thun_01_b                          75     0     0          0          0      0            0
+thun_02_a                          75     0     0          0          0      0            0
+zurich_city_12_a                   75     0     0          0          0      0            0
+zurich_city_13_a                   75     0     0          0          0      0            0
+zurich_city_13_b                   75     0     0          0          0      0            0
+zurich_city_14_a                   75     0     0          0          0      0            0
+zurich_city_14_b                   75     0     0          0          0      0            0
+zurich_city_14_c                   75     0     0          0          0      0            0
+zurich_city_15_a                   75     0     0          0          0      0            0
+
+test sequences: 13
+total uploaded test event files: 1

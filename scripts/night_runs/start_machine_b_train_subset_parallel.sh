@@ -67,6 +67,15 @@ parse_csv() {
   tr ',' '\n' <<< "$v" | sed '/^$/d'
 }
 
+count_non_comment_lines() {
+  local f="$1"
+  if [ ! -f "${f}" ]; then
+    echo 0
+    return 0
+  fi
+  awk '!/^[[:space:]]*#/{c++} END{print c+0}' "${f}" 2>/dev/null || echo 0
+}
+
 if [ "${RUN_ANN}" != "1" ] && [ "${RUN_SNN}" != "1" ]; then
   echo "ERROR: both RUN_ANN and RUN_SNN are disabled." | tee -a "${ENV_LOG_FILE}"
   exit 1
@@ -141,7 +150,7 @@ if [ "${RUN_SNN}" = "1" ] && [ "${CHECK_SIM_EVENTS}" = "1" ]; then
       missing=$((missing + 1))
       continue
     fi
-    lines="$(grep -vc '^[[:space:]]*#' "${p}" 2>/dev/null || echo 0)"
+    lines="$(count_non_comment_lines "${p}")"
     if [ "${lines}" -lt "${MIN_EVENT_LINES}" ]; then
       echo "[preflight] simulated events has no data rows (${lines}): ${p}" | tee -a "${ENV_LOG_FILE}"
       missing=$((missing + 1))
@@ -163,7 +172,7 @@ if [ "${RUN_SNN}" = "1" ] && [ "${CHECK_SIM_EVENTS}" = "1" ]; then
       missing=$((missing + 1))
       continue
     fi
-    lines="$(grep -vc '^[[:space:]]*#' "${p}" 2>/dev/null || echo 0)"
+    lines="$(count_non_comment_lines "${p}")"
     if [ "${lines}" -lt "${MIN_EVENT_LINES}" ]; then
       echo "[preflight] simulated events has no data rows (${lines}): ${p}" | tee -a "${ENV_LOG_FILE}"
       missing=$((missing + 1))

@@ -73,6 +73,15 @@ parse_csv() {
   tr ',' '\n' <<< "$v" | sed '/^$/d'
 }
 
+count_non_comment_lines() {
+  local f="$1"
+  if [ ! -f "${f}" ]; then
+    echo 0
+    return 0
+  fi
+  awk '!/^[[:space:]]*#/{c++} END{print c+0}' "${f}" 2>/dev/null || echo 0
+}
+
 join_by_comma() {
   local out=""
   local first=1
@@ -124,7 +133,7 @@ prune_invalid_events_for_sequence() {
   local removed=0
   while IFS= read -r evf; do
     [ -f "${evf}" ] || continue
-    rows="$(grep -vc '^[[:space:]]*#' "${evf}" 2>/dev/null || echo 0)"
+    rows="$(count_non_comment_lines "${evf}")"
     if [ "${rows}" -lt "${MIN_EVENT_ROWS}" ]; then
       rm -f "${evf}"
       removed=$((removed + 1))
@@ -139,6 +148,7 @@ prune_invalid_events_for_sequence() {
 run_upload_once() {
   local upload_log="$1"
   local seq_name="${2:-}"
+  local split_prefix="${SPLIT}"
   local -a upload_args=(
     "--env-file" "${ENV_FILE}"
     "--workers" "${UPLOAD_WORKERS}"
@@ -147,35 +157,35 @@ run_upload_once() {
   if [ "${UPLOAD_SCOPE}" = "events_only" ]; then
     if [ -n "${seq_name}" ]; then
       upload_globs=(
-        "test/${seq_name}/v2e_output*/dvs_events.txt"
-        "test/${seq_name}/v2e_output*/v2e-args.txt"
-        "test/${seq_name}/object_detections/left/tracks_rectified*.npy"
+        "${split_prefix}/${seq_name}/v2e_output*/dvs_events.txt"
+        "${split_prefix}/${seq_name}/v2e_output*/v2e-args.txt"
+        "${split_prefix}/${seq_name}/object_detections/left/tracks_rectified*.npy"
       )
     else
       upload_globs=(
-        "test/*/v2e_output*/dvs_events.txt"
-        "test/*/v2e_output*/v2e-args.txt"
-        "test/*/object_detections/left/tracks_rectified*.npy"
+        "${split_prefix}/*/v2e_output*/dvs_events.txt"
+        "${split_prefix}/*/v2e_output*/v2e-args.txt"
+        "${split_prefix}/*/object_detections/left/tracks_rectified*.npy"
       )
     fi
   else
     if [ -n "${seq_name}" ]; then
       upload_globs=(
-        "test/${seq_name}/v2e_output*/dvs_events.txt"
-        "test/${seq_name}/v2e_output*/v2e-args.txt"
-        "test/${seq_name}/images/left/distorted_gray/*.png"
-        "test/${seq_name}/images/left/distorted_*_s*/*.png"
-        "test/${seq_name}/object_detections/left/tracks_rectified*.npy"
-        "test/${seq_name}/object_detections/left/rectified_validation*/*.png"
+        "${split_prefix}/${seq_name}/v2e_output*/dvs_events.txt"
+        "${split_prefix}/${seq_name}/v2e_output*/v2e-args.txt"
+        "${split_prefix}/${seq_name}/images/left/distorted_gray/*.png"
+        "${split_prefix}/${seq_name}/images/left/distorted_*_s*/*.png"
+        "${split_prefix}/${seq_name}/object_detections/left/tracks_rectified*.npy"
+        "${split_prefix}/${seq_name}/object_detections/left/rectified_validation*/*.png"
       )
     else
       upload_globs=(
-        "test/*/v2e_output*/dvs_events.txt"
-        "test/*/v2e_output*/v2e-args.txt"
-        "test/*/images/left/distorted_gray/*.png"
-        "test/*/images/left/distorted_*_s*/*.png"
-        "test/*/object_detections/left/tracks_rectified*.npy"
-        "test/*/object_detections/left/rectified_validation*/*.png"
+        "${split_prefix}/*/v2e_output*/dvs_events.txt"
+        "${split_prefix}/*/v2e_output*/v2e-args.txt"
+        "${split_prefix}/*/images/left/distorted_gray/*.png"
+        "${split_prefix}/*/images/left/distorted_*_s*/*.png"
+        "${split_prefix}/*/object_detections/left/tracks_rectified*.npy"
+        "${split_prefix}/*/object_detections/left/rectified_validation*/*.png"
       )
     fi
   fi

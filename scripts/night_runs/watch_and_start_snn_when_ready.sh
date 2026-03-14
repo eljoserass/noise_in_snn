@@ -44,7 +44,7 @@ event_rows() {
     echo 0
     return 0
   fi
-  grep -vc '^[[:space:]]*#' "$f" 2>/dev/null || echo 0
+  awk '!/^[[:space:]]*#/{c++} END{print c+0}' "$f" 2>/dev/null || echo 0
 }
 
 is_snn_running() {
