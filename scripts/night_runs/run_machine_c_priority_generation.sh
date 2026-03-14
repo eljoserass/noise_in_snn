@@ -1,0 +1,400 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Priority, resume-safe test generation runner.
+# - Sequential phases so high-priority outputs finish first.
+# - Safe to re-run: all phases use --skip-existing.
+# - Supports sequence batching via SEQ_OFFSET / SEQ_LIMIT.
+
+cd "$(dirname "$0")/../.."
+
+LOG_DIR="${LOG_DIR:-logs}"
+mkdir -p "${LOG_DIR}"
+
+RUN_TAG="${RUN_TAG:-priority_gen_$(date +%Y%m%d_%H%M%S)}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-${LOG_DIR}/${RUN_TAG}}"
+mkdir -p "${RUN_LOG_DIR}"
+
+DSEC_ROOT="${DSEC_ROOT:-/workspace/data/dsec}"
+SPLIT="${SPLIT:-test}"
+JOBS="${JOBS:-4}"
+V2E_SCRIPT="${V2E_SCRIPT:-tools/v2e/v2e.py}"
+INPUT_FPS="${INPUT_FPS:-20}"
+V2E_EXPOSURE_DURATION="${V2E_EXPOSURE_DURATION:-0.005}"
+
+# Ordered priority list. Example override:
+# PHASES="clean,native_core,weather,blur,digital"
+PHASES="${PHASES:-clean,native_core,weather,blur}"
+
+# Optional sequence filter:
+# TEST_SEQUENCES="interlaken_00_a,interlaken_00_b"
+TEST_SEQUENCES="${TEST_SEQUENCES:-}"
+
+# Batch controls over selected sequences:
+# - SEQ_OFFSET: skip first N selected sequences
+# - SEQ_LIMIT: process only next N sequences (0 => all remaining)
+SEQ_OFFSET="${SEQ_OFFSET:-0}"
+SEQ_LIMIT="${SEQ_LIMIT:-0}"
+
+# Severity / noise presets
+SEVERITY_CORE="${SEVERITY_CORE:-1,3,5}"
+SEVERITY_FULL="${SEVERITY_FULL:-1,2,3,4,5}"
+NATIVE_CORE_NOISES="${NATIVE_CORE_NOISES:-shot_noise,leak_noise,threshold_jitter,refractory}"
+NATIVE_EXTRA_NOISES="${NATIVE_EXTRA_NOISES:-bandwidth_limit,photoreceptor_noise}"
+
+# Set to 0 if you want best-effort and continue after a failed phase.
+STOP_ON_ERROR="${STOP_ON_ERROR:-1}"
+
+# R2 backup upload (read from ../dsec_data_managing/.env by default)
+ENABLE_UPLOAD="${ENABLE_UPLOAD:-1}"
+UPLOAD_AFTER_EACH_PHASE="${UPLOAD_AFTER_EACH_PHASE:-0}"
+UPLOAD_GRANULARITY="${UPLOAD_GRANULARITY:-sequence}" # sequence | phase
+ENV_FILE="${ENV_FILE:-../dsec_data_managing/.env}"
+UPLOAD_WORKERS="${UPLOAD_WORKERS:-32}"
+UPLOAD_REMOTE_PREFIX="${UPLOAD_REMOTE_PREFIX:-dsec_processed}"
+UPLOAD_SCOPE="${UPLOAD_SCOPE:-all_processed}"  # events_only | all_processed
+
+parse_csv() {
+  local v="$1"
+  v="${v// /}"
+  if [ -z "$v" ]; then
+    return 0
+  fi
+  tr ',' '\n' <<< "$v" | sed '/^$/d'
+}
+
+join_by_comma() {
+  local out=""
+  local first=1
+  for x in "$@"; do
+    if [ $first -eq 1 ]; then
+      out="$x"
+      first=0
+    else
+      out="${out},${x}"
+    fi
+  done
+  printf "%s" "$out"
+}
+
+run_upload_once() {
+  local upload_log="$1"
+  local seq_name="${2:-}"
+  local -a upload_args=(
+    "--env-file" "${ENV_FILE}"
+    "--workers" "${UPLOAD_WORKERS}"
+  )
+
+  if [ "${UPLOAD_SCOPE}" = "events_only" ]; then
+    if [ -n "${seq_name}" ]; then
+      upload_globs=(
+        "test/${seq_name}/v2e_output*/dvs_events.txt"
+        "test/${seq_name}/v2e_output*/v2e-args.txt"
+        "test/${seq_name}/object_detections/left/tracks_rectified*.npy"
+      )
+    else
+      upload_globs=(
+        "test/*/v2e_output*/dvs_events.txt"
+        "test/*/v2e_output*/v2e-args.txt"
+        "test/*/object_detections/left/tracks_rectified*.npy"
+      )
+    fi
+  else
+    if [ -n "${seq_name}" ]; then
+      upload_globs=(
+        "test/${seq_name}/v2e_output*/dvs_events.txt"
+        "test/${seq_name}/v2e_output*/v2e-args.txt"
+        "test/${seq_name}/images/left/distorted_gray/*.png"
+        "test/${seq_name}/images/left/distorted_*_s*/*.png"
+        "test/${seq_name}/object_detections/left/tracks_rectified*.npy"
+        "test/${seq_name}/object_detections/left/rectified_validation*/*.png"
+      )
+    else
+      upload_globs=(
+        "test/*/v2e_output*/dvs_events.txt"
+        "test/*/v2e_output*/v2e-args.txt"
+        "test/*/images/left/distorted_gray/*.png"
+        "test/*/images/left/distorted_*_s*/*.png"
+        "test/*/object_detections/left/tracks_rectified*.npy"
+        "test/*/object_detections/left/rectified_validation*/*.png"
+      )
+    fi
+  fi
+
+  for g in "${upload_globs[@]}"; do
+    upload_args+=("--include-glob" "${g}")
+  done
+
+  python3 scripts/r2_sync.py \
+    "${upload_args[@]}" \
+    upload \
+    --local-dir "${DSEC_ROOT}" \
+    --remote-prefix "${UPLOAD_REMOTE_PREFIX}" >>"${upload_log}" 2>&1
+}
+
+discover_sequences() {
+  local root="$1"
+  local split="$2"
+  find "${root}/${split}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+}
+
+apply_seq_batch() {
+  local -n _arr_ref=$1
+  local offset="$2"
+  local limit="$3"
+  local n="${#_arr_ref[@]}"
+
+  if [ "$offset" -ge "$n" ]; then
+    _arr_ref=()
+    return 0
+  fi
+
+  local sliced=("${_arr_ref[@]:offset}")
+  if [ "$limit" -gt 0 ] && [ "$limit" -lt "${#sliced[@]}" ]; then
+    sliced=("${sliced[@]:0:limit}")
+  fi
+  _arr_ref=("${sliced[@]}")
+}
+
+run_phase_for_sequence() {
+  local phase="$1"
+  local extra_args="$2"
+  local seq="$3"
+  local phase_log="${RUN_LOG_DIR}/${phase}.log"
+
+  echo "[phase:${phase}] seq=${seq} start $(date -Iseconds)" | tee -a "${RUN_LOG_DIR}/summary.log"
+
+  local -a cmd=(
+    python3 scripts/dsec_batch_pipeline.py
+    --dsec-root "${DSEC_ROOT}"
+    --splits "${SPLIT}"
+    --jobs 1
+    --sequences "${seq}"
+    --extra-args "${extra_args}"
+  )
+
+  set +e
+  "${cmd[@]}" >>"${phase_log}" 2>&1
+  local rc=$?
+  set -e
+
+  if [ "$rc" -ne 0 ]; then
+    echo "[phase:${phase}] seq=${seq} FAIL rc=${rc} (see ${phase_log})" | tee -a "${RUN_LOG_DIR}/summary.log"
+    if [ "${STOP_ON_ERROR}" = "1" ]; then
+      exit "$rc"
+    fi
+    return 0
+  fi
+
+  echo "[phase:${phase}] seq=${seq} OK" | tee -a "${RUN_LOG_DIR}/summary.log"
+
+  if [ "${ENABLE_UPLOAD}" = "1" ] && [ "${UPLOAD_GRANULARITY}" = "sequence" ]; then
+    local upload_log="${RUN_LOG_DIR}/upload_${phase}.log"
+    echo "[upload:${phase}] seq=${seq} start $(date -Iseconds)" | tee -a "${RUN_LOG_DIR}/summary.log"
+    set +e
+    run_upload_once "${upload_log}" "${seq}"
+    local urc=$?
+    set -e
+    if [ "${urc}" -ne 0 ]; then
+      echo "[upload:${phase}] seq=${seq} FAIL rc=${urc} (see ${upload_log})" | tee -a "${RUN_LOG_DIR}/summary.log"
+      if [ "${STOP_ON_ERROR}" = "1" ]; then
+        exit "${urc}"
+      fi
+    else
+      echo "[upload:${phase}] seq=${seq} OK (see ${upload_log})" | tee -a "${RUN_LOG_DIR}/summary.log"
+    fi
+  fi
+}
+
+run_phase_bulk() {
+  local phase="$1"
+  local extra_args="$2"
+  local phase_log="${RUN_LOG_DIR}/${phase}.log"
+
+  echo "[phase:${phase}] start $(date -Iseconds)" | tee -a "${RUN_LOG_DIR}/summary.log"
+  echo "[phase:${phase}] args: ${extra_args}" | tee -a "${RUN_LOG_DIR}/summary.log"
+
+  local -a cmd=(
+    python3 scripts/dsec_batch_pipeline.py
+    --dsec-root "${DSEC_ROOT}"
+    --splits "${SPLIT}"
+    --jobs "${JOBS}"
+    --extra-args "${extra_args}"
+  )
+  if [ -n "${RUN_SEQUENCES_CSV}" ]; then
+    cmd+=(--sequences "${RUN_SEQUENCES_CSV}")
+  fi
+
+  set +e
+  "${cmd[@]}" >"${phase_log}" 2>&1
+  local rc=$?
+  set -e
+
+  if [ "$rc" -ne 0 ]; then
+    echo "[phase:${phase}] FAIL rc=${rc} (see ${phase_log})" | tee -a "${RUN_LOG_DIR}/summary.log"
+    if [ "${STOP_ON_ERROR}" = "1" ]; then
+      exit "$rc"
+    fi
+  else
+    echo "[phase:${phase}] OK (see ${phase_log})" | tee -a "${RUN_LOG_DIR}/summary.log"
+    if [ "${ENABLE_UPLOAD}" = "1" ] && [ "${UPLOAD_AFTER_EACH_PHASE}" = "1" ]; then
+      upload_log="${RUN_LOG_DIR}/upload_${phase}.log"
+      echo "[upload:${phase}] start $(date -Iseconds)" | tee -a "${RUN_LOG_DIR}/summary.log"
+      set +e
+      run_upload_once "${upload_log}"
+      local urc=$?
+      set -e
+      if [ "${urc}" -ne 0 ]; then
+        echo "[upload:${phase}] FAIL rc=${urc} (see ${upload_log})" | tee -a "${RUN_LOG_DIR}/summary.log"
+        if [ "${STOP_ON_ERROR}" = "1" ]; then
+          exit "${urc}"
+        fi
+      else
+        echo "[upload:${phase}] OK (see ${upload_log})" | tee -a "${RUN_LOG_DIR}/summary.log"
+      fi
+    fi
+  fi
+}
+
+run_phase() {
+  local phase="$1"
+  local extra_args="$2"
+
+  if [ "${UPLOAD_GRANULARITY}" = "sequence" ]; then
+    local phase_log="${RUN_LOG_DIR}/${phase}.log"
+    : > "${phase_log}"
+    for seq in "${selected_sequences[@]}"; do
+      run_phase_for_sequence "${phase}" "${extra_args}" "${seq}"
+    done
+  else
+    run_phase_bulk "${phase}" "${extra_args}"
+  fi
+}
+
+if [ ! -d "${DSEC_ROOT}/${SPLIT}" ]; then
+  echo "ERROR: split dir not found: ${DSEC_ROOT}/${SPLIT}"
+  exit 1
+fi
+
+mapfile -t all_sequences < <(discover_sequences "${DSEC_ROOT}" "${SPLIT}")
+if [ "${#all_sequences[@]}" -eq 0 ]; then
+  echo "ERROR: no sequences found in ${DSEC_ROOT}/${SPLIT}"
+  exit 1
+fi
+
+selected_sequences=()
+if [ -n "${TEST_SEQUENCES}" ]; then
+  mapfile -t requested_sequences < <(parse_csv "${TEST_SEQUENCES}")
+  declare -A have=()
+  for s in "${all_sequences[@]}"; do
+    have["$s"]=1
+  done
+  for s in "${requested_sequences[@]}"; do
+    if [ "${have[$s]+x}" = "x" ]; then
+      selected_sequences+=("$s")
+    else
+      echo "WARN: requested sequence not found under ${SPLIT}: ${s}" | tee -a "${RUN_LOG_DIR}/summary.log"
+    fi
+  done
+else
+  selected_sequences=("${all_sequences[@]}")
+fi
+
+apply_seq_batch selected_sequences "${SEQ_OFFSET}" "${SEQ_LIMIT}"
+
+if [ "${#selected_sequences[@]}" -eq 0 ]; then
+  echo "ERROR: no sequences selected after TEST_SEQUENCES/SEQ_OFFSET/SEQ_LIMIT filtering."
+  exit 1
+fi
+
+RUN_SEQUENCES_CSV="$(join_by_comma "${selected_sequences[@]}")"
+
+{
+  echo "== priority generation run =="
+  echo "run_tag=${RUN_TAG}"
+  echo "run_log_dir=${RUN_LOG_DIR}"
+  echo "dsec_root=${DSEC_ROOT}"
+  echo "split=${SPLIT}"
+  echo "jobs=${JOBS}"
+  echo "v2e_script=${V2E_SCRIPT}"
+  echo "phases=${PHASES}"
+  echo "sequences_total=${#all_sequences[@]}"
+  echo "sequences_selected=${#selected_sequences[@]}"
+  echo "sequences_csv=${RUN_SEQUENCES_CSV}"
+  echo "seq_offset=${SEQ_OFFSET}"
+  echo "seq_limit=${SEQ_LIMIT}"
+  echo "severity_core=${SEVERITY_CORE}"
+  echo "severity_full=${SEVERITY_FULL}"
+  echo "native_core_noises=${NATIVE_CORE_NOISES}"
+  echo "native_extra_noises=${NATIVE_EXTRA_NOISES}"
+  echo "stop_on_error=${STOP_ON_ERROR}"
+  echo "enable_upload=${ENABLE_UPLOAD}"
+  echo "upload_after_each_phase=${UPLOAD_AFTER_EACH_PHASE}"
+  echo "upload_granularity=${UPLOAD_GRANULARITY}"
+  echo "upload_scope=${UPLOAD_SCOPE}"
+  echo "upload_remote_prefix=${UPLOAD_REMOTE_PREFIX}"
+  echo "upload_workers=${UPLOAD_WORKERS}"
+} | tee -a "${RUN_LOG_DIR}/summary.log"
+
+mapfile -t phase_list < <(parse_csv "${PHASES}")
+for phase in "${phase_list[@]}"; do
+  case "${phase}" in
+    clean)
+      run_phase "${phase}" \
+        "--run-v2e --v2e-script ${V2E_SCRIPT} --v2e-modes clean --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+      ;;
+    native_core)
+      run_phase "${phase}" \
+        "--run-v2e --v2e-script ${V2E_SCRIPT} --v2e-modes none --manual-v2e-noises ${NATIVE_CORE_NOISES} --severity-levels ${SEVERITY_CORE} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+      ;;
+    native_extra)
+      run_phase "${phase}" \
+        "--run-v2e --v2e-script ${V2E_SCRIPT} --v2e-modes none --manual-v2e-noises ${NATIVE_EXTRA_NOISES} --severity-levels ${SEVERITY_CORE} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+      ;;
+    weather)
+      run_phase "${phase}" \
+        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --corruption-subset weather --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+      ;;
+    blur)
+      run_phase "${phase}" \
+        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --corruption-subset blur --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+      ;;
+    noise)
+      run_phase "${phase}" \
+        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --corruption-subset noise --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+      ;;
+    digital)
+      run_phase "${phase}" \
+        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --corruption-subset digital --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+      ;;
+    full_weather)
+      run_phase "${phase}" \
+        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --corruption-subset weather --severity-levels ${SEVERITY_FULL} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+      ;;
+    *)
+      echo "ERROR: unknown phase '${phase}'"
+      echo "Valid phases: clean,native_core,native_extra,weather,blur,noise,digital,full_weather"
+      exit 1
+      ;;
+  esac
+done
+
+if [ "${ENABLE_UPLOAD}" = "1" ] && [ "${UPLOAD_GRANULARITY}" != "sequence" ] && [ "${UPLOAD_AFTER_EACH_PHASE}" != "1" ]; then
+  final_upload_log="${RUN_LOG_DIR}/upload_final.log"
+  echo "[upload:final] start $(date -Iseconds)" | tee -a "${RUN_LOG_DIR}/summary.log"
+  set +e
+  run_upload_once "${final_upload_log}"
+  urc=$?
+  set -e
+  if [ "${urc}" -ne 0 ]; then
+    echo "[upload:final] FAIL rc=${urc} (see ${final_upload_log})" | tee -a "${RUN_LOG_DIR}/summary.log"
+    if [ "${STOP_ON_ERROR}" = "1" ]; then
+      exit "${urc}"
+    fi
+  else
+    echo "[upload:final] OK (see ${final_upload_log})" | tee -a "${RUN_LOG_DIR}/summary.log"
+  fi
+fi
+
+echo "== done ==" | tee -a "${RUN_LOG_DIR}/summary.log"
+echo "logs: ${RUN_LOG_DIR}"
