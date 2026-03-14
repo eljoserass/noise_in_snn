@@ -22,6 +22,11 @@ V2E_SCRIPT="${V2E_SCRIPT:-tools/v2e/v2e.py}"
 INPUT_FPS="${INPUT_FPS:-20}"
 V2E_EXPOSURE_DURATION="${V2E_EXPOSURE_DURATION:-0.005}"
 
+# Optional env bootstrap for machine C style runs.
+BOOTSTRAP_ENV="${BOOTSTRAP_ENV:-1}"
+VENV_DIR="${VENV_DIR:-.venv_machine_c}"
+INSTALL_REQUIREMENTS="${INSTALL_REQUIREMENTS:-1}"
+
 # Ordered priority list. Example override:
 # PHASES="clean,native_core,weather,blur,digital"
 PHASES="${PHASES:-clean,native_core,weather,blur}"
@@ -54,6 +59,11 @@ UPLOAD_WORKERS="${UPLOAD_WORKERS:-32}"
 UPLOAD_REMOTE_PREFIX="${UPLOAD_REMOTE_PREFIX:-dsec_processed}"
 UPLOAD_SCOPE="${UPLOAD_SCOPE:-all_processed}"  # events_only | all_processed
 
+# If set, remove header-only/empty event files before processing each sequence
+# so --skip-existing does not lock in broken outputs.
+PRUNE_INVALID_EVENTS="${PRUNE_INVALID_EVENTS:-1}"
+MIN_EVENT_ROWS="${MIN_EVENT_ROWS:-1}"
+
 parse_csv() {
   local v="$1"
   v="${v// /}"
@@ -75,6 +85,55 @@ join_by_comma() {
     fi
   done
   printf "%s" "$out"
+}
+
+bootstrap_env() {
+  if [ "${BOOTSTRAP_ENV}" != "1" ]; then
+    return 0
+  fi
+
+  if [ ! -d "${VENV_DIR}" ]; then
+    echo "[setup] creating venv: ${VENV_DIR}" | tee -a "${RUN_LOG_DIR}/summary.log"
+    python3 -m venv "${VENV_DIR}"
+  fi
+
+  # shellcheck disable=SC1090
+  source "${VENV_DIR}/bin/activate"
+
+  if [ "${INSTALL_REQUIREMENTS}" = "1" ]; then
+    echo "[setup] installing requirements into ${VENV_DIR}" | tee -a "${RUN_LOG_DIR}/summary.log"
+    pip install --upgrade pip >/dev/null 2>&1 || true
+    pip install -r requirements.txt >>"${RUN_LOG_DIR}/setup.log" 2>&1 || true
+  fi
+
+  if ! python3 - <<'PY' >/dev/null 2>&1
+import cv2  # noqa: F401
+import imagecorruptions  # noqa: F401
+PY
+  then
+    echo "[setup] installing missing runtime deps (opencv/imagecorruptions)" | tee -a "${RUN_LOG_DIR}/summary.log"
+    pip install opencv-python imagecorruptions >>"${RUN_LOG_DIR}/setup.log" 2>&1
+  fi
+}
+
+prune_invalid_events_for_sequence() {
+  local seq="$1"
+  local seq_root="${DSEC_ROOT}/${SPLIT}/${seq}"
+  [ -d "${seq_root}" ] || return 0
+
+  local removed=0
+  while IFS= read -r evf; do
+    [ -f "${evf}" ] || continue
+    rows="$(grep -vc '^[[:space:]]*#' "${evf}" 2>/dev/null || echo 0)"
+    if [ "${rows}" -lt "${MIN_EVENT_ROWS}" ]; then
+      rm -f "${evf}"
+      removed=$((removed + 1))
+    fi
+  done < <(find "${seq_root}" -type f -path '*/v2e_output*/dvs_events.txt' 2>/dev/null)
+
+  if [ "${removed}" -gt 0 ]; then
+    echo "[pre] seq=${seq} removed_invalid_event_files=${removed}" | tee -a "${RUN_LOG_DIR}/summary.log"
+  fi
 }
 
 run_upload_once() {
@@ -161,6 +220,10 @@ run_phase_for_sequence() {
   local extra_args="$2"
   local seq="$3"
   local phase_log="${RUN_LOG_DIR}/${phase}.log"
+
+  if [ "${PRUNE_INVALID_EVENTS}" = "1" ]; then
+    prune_invalid_events_for_sequence "${seq}"
+  fi
 
   echo "[phase:${phase}] seq=${seq} start $(date -Iseconds)" | tee -a "${RUN_LOG_DIR}/summary.log"
 
@@ -276,6 +339,8 @@ if [ ! -d "${DSEC_ROOT}/${SPLIT}" ]; then
   exit 1
 fi
 
+bootstrap_env
+
 mapfile -t all_sequences < <(discover_sequences "${DSEC_ROOT}" "${SPLIT}")
 if [ "${#all_sequences[@]}" -eq 0 ]; then
   echo "ERROR: no sequences found in ${DSEC_ROOT}/${SPLIT}"
@@ -334,6 +399,10 @@ RUN_SEQUENCES_CSV="$(join_by_comma "${selected_sequences[@]}")"
   echo "upload_scope=${UPLOAD_SCOPE}"
   echo "upload_remote_prefix=${UPLOAD_REMOTE_PREFIX}"
   echo "upload_workers=${UPLOAD_WORKERS}"
+  echo "bootstrap_env=${BOOTSTRAP_ENV}"
+  echo "venv_dir=${VENV_DIR}"
+  echo "prune_invalid_events=${PRUNE_INVALID_EVENTS}"
+  echo "min_event_rows=${MIN_EVENT_ROWS}"
 } | tee -a "${RUN_LOG_DIR}/summary.log"
 
 mapfile -t phase_list < <(parse_csv "${PHASES}")

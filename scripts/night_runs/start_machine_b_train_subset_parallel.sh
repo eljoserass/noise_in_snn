@@ -7,8 +7,9 @@ LOG_DIR="${LOG_DIR:-logs}"
 mkdir -p "${LOG_DIR}"
 
 HOST_TAG="$(hostname | cut -d'.' -f1)"
-VENV_DIR="${VENV_DIR:-.venv_train_${HOST_TAG}}"
-RECREATE_VENV="${RECREATE_VENV:-1}"          # 1 = flush venv each run
+VENV_BASENAME_DEFAULT=".venv_train_${HOST_TAG}"
+VENV_DIR="${VENV_DIR:-${VENV_BASENAME_DEFAULT}}"
+CREATE_NEW_VENV="${CREATE_NEW_VENV:-1}"      # 1 = always create a fresh venv without deleting old ones
 INSTALL_REQUIREMENTS="${INSTALL_REQUIREMENTS:-1}"
 REQUIRE_CUDA="${REQUIRE_CUDA:-1}"            # 1 = fail if CUDA not available
 
@@ -36,6 +37,9 @@ SIM_EVENT_RELPATH="${SIM_EVENT_RELPATH:-v2e_output_distorted_gray_clean/dvs_even
 SIM_FPS="${SIM_FPS:-20}"
 SNN_SEQUENCE_LENGTH="${SNN_SEQUENCE_LENGTH:-8}"
 SNN_SEQUENCE_STRIDE="${SNN_SEQUENCE_STRIDE:-8}"
+CHECK_SIM_EVENTS="${CHECK_SIM_EVENTS:-1}"
+MIN_EVENT_BYTES="${MIN_EVENT_BYTES:-32}"
+MIN_EVENT_LINES="${MIN_EVENT_LINES:-1}"
 
 ANN_SAVE_DIR="${ANN_SAVE_DIR:-checkpoints/dsec_subset_ann}"
 SNN_SAVE_DIR="${SNN_SAVE_DIR:-checkpoints/dsec_subset_snn_sim}"
@@ -51,9 +55,18 @@ WANDB_PROJECT_SNN="${WANDB_PROJECT_SNN:-dsec_subset_snn_sim}"
 WANDB_RUN_NAME_ANN="${WANDB_RUN_NAME_ANN:-}"
 WANDB_RUN_NAME_SNN="${WANDB_RUN_NAME_SNN:-}"
 
-if [ "${RECREATE_VENV}" = "1" ] && [ -d "${VENV_DIR}" ]; then
-  echo "[setup] removing existing venv: ${VENV_DIR}" | tee -a "${ENV_LOG_FILE}"
-  rm -rf "${VENV_DIR}"
+parse_csv() {
+  local v="$1"
+  v="${v// /}"
+  if [ -z "$v" ]; then
+    return 0
+  fi
+  tr ',' '\n' <<< "$v" | sed '/^$/d'
+}
+
+if [ "${CREATE_NEW_VENV}" = "1" ] && [ -d "${VENV_DIR}" ]; then
+  stamp="$(date +%Y%m%d_%H%M%S)"
+  VENV_DIR="${VENV_DIR}_${stamp}"
 fi
 
 if [ ! -d "${VENV_DIR}" ]; then
@@ -65,6 +78,8 @@ fi
 source "${VENV_DIR}/bin/activate"
 
 {
+  echo "[setup] create_new_venv=${CREATE_NEW_VENV}"
+  echo "[setup] venv_dir=${VENV_DIR}"
   echo "[setup] python: $(python --version 2>&1)"
   echo "[setup] pip: $(pip --version 2>&1)"
   echo "[setup] upgrading pip/setuptools/wheel"
@@ -95,6 +110,61 @@ if require_cuda and not torch.cuda.is_available():
 PY
 
 mkdir -p "${ANN_SAVE_DIR}" "${SNN_SAVE_DIR}"
+
+if [ "${CHECK_SIM_EVENTS}" = "1" ]; then
+  missing=0
+  checked=0
+  while IFS= read -r seq; do
+    [ -n "${seq}" ] || continue
+    p="${DSEC_ROOT}/${TRAIN_SPLIT}/${seq}/${SIM_EVENT_RELPATH}"
+    checked=$((checked + 1))
+    if [ ! -f "${p}" ]; then
+      echo "[preflight] missing simulated events file: ${p}" | tee -a "${ENV_LOG_FILE}"
+      missing=$((missing + 1))
+      continue
+    fi
+    size="$(stat -c%s "${p}" 2>/dev/null || echo 0)"
+    if [ "${size}" -lt "${MIN_EVENT_BYTES}" ]; then
+      echo "[preflight] simulated events too small (${size} B): ${p}" | tee -a "${ENV_LOG_FILE}"
+      missing=$((missing + 1))
+      continue
+    fi
+    lines="$(grep -vc '^[[:space:]]*#' "${p}" 2>/dev/null || echo 0)"
+    if [ "${lines}" -lt "${MIN_EVENT_LINES}" ]; then
+      echo "[preflight] simulated events has no data rows (${lines}): ${p}" | tee -a "${ENV_LOG_FILE}"
+      missing=$((missing + 1))
+    fi
+  done < <(parse_csv "${TRAIN_SEQUENCES}")
+
+  while IFS= read -r seq; do
+    [ -n "${seq}" ] || continue
+    p="${DSEC_ROOT}/${VAL_SPLIT}/${seq}/${SIM_EVENT_RELPATH}"
+    checked=$((checked + 1))
+    if [ ! -f "${p}" ]; then
+      echo "[preflight] missing simulated events file: ${p}" | tee -a "${ENV_LOG_FILE}"
+      missing=$((missing + 1))
+      continue
+    fi
+    size="$(stat -c%s "${p}" 2>/dev/null || echo 0)"
+    if [ "${size}" -lt "${MIN_EVENT_BYTES}" ]; then
+      echo "[preflight] simulated events too small (${size} B): ${p}" | tee -a "${ENV_LOG_FILE}"
+      missing=$((missing + 1))
+      continue
+    fi
+    lines="$(grep -vc '^[[:space:]]*#' "${p}" 2>/dev/null || echo 0)"
+    if [ "${lines}" -lt "${MIN_EVENT_LINES}" ]; then
+      echo "[preflight] simulated events has no data rows (${lines}): ${p}" | tee -a "${ENV_LOG_FILE}"
+      missing=$((missing + 1))
+    fi
+  done < <(parse_csv "${VAL_SEQUENCES}")
+
+  echo "[preflight] checked_sim_event_files=${checked} missing_or_small=${missing}" | tee -a "${ENV_LOG_FILE}"
+  if [ "${missing}" -gt 0 ]; then
+    echo "[preflight] ERROR: simulated event files are missing on this machine." | tee -a "${ENV_LOG_FILE}"
+    echo "[preflight] sync/download them first, then re-run." | tee -a "${ENV_LOG_FILE}"
+    exit 1
+  fi
+fi
 
 ann_cmd=(
   python scripts/train_ann_dsec.py
@@ -167,6 +237,7 @@ snn_pid=$!
 
 echo "ann_pid=${ann_pid}"
 echo "snn_pid=${snn_pid}"
+echo "venv_dir=${VENV_DIR}"
 echo "env_log=${ENV_LOG_FILE}"
 echo "ann_log=${ANN_LOG_FILE}"
 echo "snn_log=${SNN_LOG_FILE}"
