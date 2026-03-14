@@ -163,6 +163,8 @@ def run_v2e(
         str(exposure_duration_s),
         "--dvs_text",
         "dvs_events.txt",
+        "--unique_output_folder",
+        "False",
         "--skip_video_output",
         "--no_preview",
     ]
@@ -185,6 +187,26 @@ def run_v2e(
 
     events_file = output_dir / "dvs_events.txt"
     if not events_file.exists():
+        # Some v2e builds can still materialize into suffixed folders if output_dir is non-empty.
+        parent = output_dir.parent
+        stem = output_dir.name
+        candidates = sorted(
+            [
+                p / "dvs_events.txt"
+                for p in parent.glob(f"{stem}*")
+                if p.is_dir() and (p / "dvs_events.txt").exists()
+            ],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if candidates:
+            resolved = candidates[0]
+            print(f"[v2e] output resolved from sibling folder: {resolved}")
+            return resolved
+        print("--- v2e stdout tail ---")
+        print(res.stdout[-2000:])
+        print("--- v2e stderr tail ---")
+        print(res.stderr[-2000:])
         raise RuntimeError(f"v2e output missing: {events_file}")
     return events_file
 
