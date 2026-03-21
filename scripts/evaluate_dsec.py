@@ -270,6 +270,12 @@ def parse_args():
     parser.add_argument("--beta", type=float, default=0.9)
     parser.add_argument("--threshold", type=float, default=1.0)
     parser.add_argument("--surrogate-slope", type=float, default=25.0)
+    parser.add_argument(
+        "--timesteps-per-frame",
+        type=int,
+        default=5,
+        help="Repeat each SNN frame for T forward passes before post-processing (final step is used).",
+    )
     parser.add_argument("--input-height", type=int, default=480)
     parser.add_argument("--input-width", type=int, default=640)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -405,7 +411,18 @@ def run_ann_eval(model, dataloader, anchors, device, conf_threshold, nms_thresho
 
 
 @torch.no_grad()
-def run_snn_eval(model, dataloader, anchors, device, conf_threshold, nms_threshold, evaluator, input_h, input_w):
+def run_snn_eval(
+    model,
+    dataloader,
+    anchors,
+    device,
+    conf_threshold,
+    nms_threshold,
+    evaluator,
+    input_h,
+    input_w,
+    timesteps_per_frame,
+):
     for batch_idx, (sequences, targets_sequences) in enumerate(tqdm(dataloader, desc="SNN inference")):
         for seq_idx, (seq_images, seq_targets) in enumerate(zip(sequences, targets_sequences)):
             model.reset_states()
@@ -416,7 +433,8 @@ def run_snn_eval(model, dataloader, anchors, device, conf_threshold, nms_thresho
                 target = seq_targets[frame_idx]
 
                 start = time.time()
-                cls_preds, loc_preds = model(frame)
+                for _ in range(timesteps_per_frame):
+                    cls_preds, loc_preds = model(frame)
                 evaluator.inference_times.append(time.time() - start)
 
                 pred_boxes, pred_scores, pred_labels = post_process_detections(
@@ -462,6 +480,8 @@ def to_serializable(obj):
 
 def main():
     args = parse_args()
+    if args.timesteps_per_frame <= 0:
+        raise ValueError("--timesteps-per-frame must be > 0")
     os.makedirs(args.output_dir, exist_ok=True)
     device = torch.device(args.device)
     class_ids = parse_class_ids(args.class_ids)
@@ -495,6 +515,7 @@ def main():
                 evaluator,
                 args.input_height,
                 args.input_width,
+                args.timesteps_per_frame,
             )
 
         results = evaluator.compute_metrics()
