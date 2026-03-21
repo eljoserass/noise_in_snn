@@ -44,7 +44,14 @@ event_rows() {
     echo 0
     return 0
   fi
-  awk '!/^[[:space:]]*#/{c++} END{print c+0}' "$f" 2>/dev/null || echo 0
+  local out
+  out="$(awk '!/^[[:space:]]*#/{c++} END{print c+0}' "$f" 2>/dev/null || true)"
+  out="$(printf '%s\n' "${out}" | tail -n 1)"
+  if [[ "${out}" =~ ^[0-9]+$ ]]; then
+    echo "${out}"
+  else
+    echo 0
+  fi
 }
 
 is_snn_running() {

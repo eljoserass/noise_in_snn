@@ -15,11 +15,24 @@ class SSDLoss(nn.Module):
     Uses hard negative mining for class imbalance.
     """
     
-    def __init__(self, num_classes: int, neg_pos_ratio: float = 3.0, alpha: float = 1.0):
+    def __init__(
+        self,
+        num_classes: int,
+        neg_pos_ratio: float = 3.0,
+        alpha: float = 1.0,
+        class_weights: torch.Tensor | None = None,
+    ):
         super(SSDLoss, self).__init__()
         self.num_classes = num_classes
         self.neg_pos_ratio = neg_pos_ratio
         self.alpha = alpha
+        if class_weights is not None:
+            class_weights = torch.as_tensor(class_weights, dtype=torch.float32)
+            if class_weights.numel() != num_classes:
+                raise ValueError(
+                    f"class_weights length {class_weights.numel()} != num_classes {num_classes}"
+                )
+        self.register_buffer("class_weights", class_weights)
         
     def forward(self, cls_preds: torch.Tensor, loc_preds: torch.Tensor,
                 cls_targets: torch.Tensor, loc_targets: torch.Tensor) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
@@ -56,6 +69,7 @@ class SSDLoss(nn.Module):
         cls_loss_all = F.cross_entropy(
             cls_preds.view(-1, self.num_classes),
             cls_targets.view(-1),
+            weight=self.class_weights,
             reduction='none'
         ).view(batch_size, num_anchors)
         

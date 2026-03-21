@@ -14,6 +14,7 @@ Pipeline stages:
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +61,66 @@ def sorted_pngs(folder: Path, max_frames: int | None = None) -> list[Path]:
     if max_frames is not None:
         return frames[:max_frames]
     return frames
+
+
+def count_event_rows(events_txt: Path, limit: int | None = 1) -> int:
+    if not events_txt.exists():
+        return 0
+    rows = 0
+    with events_txt.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            rows += 1
+            if limit is not None and rows >= limit:
+                break
+    return rows
+
+
+def find_valid_events_file(output_dir: Path) -> Path | None:
+    events_name = "dvs_events.txt"
+    candidates: list[Path] = []
+
+    canonical = output_dir / events_name
+    if canonical.exists():
+        candidates.append(canonical)
+
+    parent = output_dir.parent
+    stem = output_dir.name
+    for sibling in parent.glob(f"{stem}*"):
+        if not sibling.is_dir() or sibling == output_dir:
+            continue
+        sibling_events = sibling / events_name
+        if sibling_events.exists():
+            candidates.append(sibling_events)
+
+    valid: list[Path] = [p for p in candidates if count_event_rows(p, limit=1) >= 1]
+    if not valid:
+        return None
+
+    valid.sort(key=lambda p: (p.stat().st_mtime, p.stat().st_size), reverse=True)
+    return valid[0]
+
+
+def canonicalize_events_output(output_dir: Path, resolved_events: Path) -> Path:
+    canonical_events = output_dir / "dvs_events.txt"
+    if resolved_events == canonical_events:
+        return canonical_events
+
+    resolved_dir = resolved_events.parent
+    if resolved_dir == output_dir:
+        return canonical_events
+
+    canonical_rows = count_event_rows(canonical_events, limit=1)
+    if canonical_rows >= 1:
+        return canonical_events
+
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    shutil.move(str(resolved_dir), str(output_dir))
+    print(f"[v2e] canonicalized output folder: {resolved_dir} -> {output_dir}")
+    return canonical_events
 
 
 def convert_to_grayscale(src_frames: list[Path], out_dir: Path, skip_existing: bool) -> int:
@@ -186,29 +247,17 @@ def run_v2e(
         raise RuntimeError(f"v2e failed for input: {input_dir}")
 
     events_file = output_dir / "dvs_events.txt"
-    if not events_file.exists():
-        # Some v2e builds can still materialize into suffixed folders if output_dir is non-empty.
-        parent = output_dir.parent
-        stem = output_dir.name
-        candidates = sorted(
-            [
-                p / "dvs_events.txt"
-                for p in parent.glob(f"{stem}*")
-                if p.is_dir() and (p / "dvs_events.txt").exists()
-            ],
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if candidates:
-            resolved = candidates[0]
-            print(f"[v2e] output resolved from sibling folder: {resolved}")
-            return resolved
+    resolved = find_valid_events_file(output_dir)
+    if resolved is None:
         print("--- v2e stdout tail ---")
         print(res.stdout[-2000:])
         print("--- v2e stderr tail ---")
         print(res.stderr[-2000:])
-        raise RuntimeError(f"v2e output missing: {events_file}")
-    return events_file
+        raise RuntimeError(f"v2e output missing/empty: {events_file}")
+
+    if resolved != events_file:
+        print(f"[v2e] output resolved from sibling folder: {resolved}")
+    return canonicalize_events_output(output_dir, resolved)
 
 
 def manual_v2e_args(noise_type: str, severity: int) -> list[str]:
@@ -449,10 +498,16 @@ def main() -> None:
         for inp in base_inputs:
             out_dir = seq_dir / f"v2e_output_{inp.name}_{mode}"
             events_txt = out_dir / "dvs_events.txt"
-            if skip_existing and events_txt.exists():
-                print(f"[v2e-skip] {events_txt}")
-                event_files.append(events_txt)
-                continue
+            if skip_existing:
+                resolved_existing = find_valid_events_file(out_dir)
+                if resolved_existing is not None:
+                    canonical = canonicalize_events_output(out_dir, resolved_existing)
+                    print(f"[v2e-skip] {canonical}")
+                    event_files.append(canonical)
+                    continue
+                if events_txt.exists():
+                    print(f"[v2e-retry] invalid existing events file, regenerating: {events_txt}")
+                    events_txt.unlink(missing_ok=True)
             event_files.append(
                 run_v2e(
                     python_exe=sys.executable,
@@ -480,10 +535,16 @@ def main() -> None:
             manual_args = manual_v2e_args(noise_type, sev)
             out_dir = seq_dir / f"v2e_output_{grayscale_dir.name}_{noise_type}_s{sev}"
             events_txt = out_dir / "dvs_events.txt"
-            if skip_existing and events_txt.exists():
-                print(f"[v2e-skip] {events_txt}")
-                event_files.append(events_txt)
-                continue
+            if skip_existing:
+                resolved_existing = find_valid_events_file(out_dir)
+                if resolved_existing is not None:
+                    canonical = canonicalize_events_output(out_dir, resolved_existing)
+                    print(f"[v2e-skip] {canonical}")
+                    event_files.append(canonical)
+                    continue
+                if events_txt.exists():
+                    print(f"[v2e-retry] invalid existing events file, regenerating: {events_txt}")
+                    events_txt.unlink(missing_ok=True)
             event_files.append(
                 run_v2e(
                     python_exe=sys.executable,

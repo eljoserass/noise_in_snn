@@ -10,6 +10,7 @@ TRAIN_SIM_SEQUENCES_DEFAULT="thun_00_a,interlaken_00_c,interlaken_00_e,interlake
 VAL_SIM_SEQUENCES_DEFAULT="zurich_city_16_a,zurich_city_17_a,zurich_city_18_a,zurich_city_19_a,zurich_city_20_a,zurich_city_21_a"
 TRAIN_SIM_SEQUENCES="${TRAIN_SIM_SEQUENCES:-${TRAIN_SIM_SEQUENCES_DEFAULT}}"
 VAL_SIM_SEQUENCES="${VAL_SIM_SEQUENCES:-${VAL_SIM_SEQUENCES_DEFAULT}}"
+MIN_EVENT_ROWS="${MIN_EVENT_ROWS:-1}"
 
 if [ ! -d "${DSEC_ROOT}" ]; then
   for candidate in "data/dsec" "../data/dsec" "/workspace/data/dsec"; do
@@ -35,9 +36,51 @@ else
   test_total=0
 fi
 
+count_non_comment_lines() {
+  local f="$1"
+  if [ ! -f "${f}" ]; then
+    echo 0
+    return 0
+  fi
+  local out
+  out="$(awk '!/^[[:space:]]*#/ {c++} END{print c+0}' "${f}" 2>/dev/null || true)"
+  out="$(printf '%s\n' "${out}" | tail -n 1)"
+  if [[ "${out}" =~ ^[0-9]+$ ]]; then
+    echo "${out}"
+  else
+    echo 0
+  fi
+}
+
+sequence_clean_status() {
+  local seq="$1"
+  local out_dir="${DSEC_ROOT}/train/${seq}/v2e_output_distorted_gray_clean"
+  local out_file="${out_dir}/dvs_events.txt"
+  local rows=0
+  rows="$(count_non_comment_lines "${out_file}")"
+  if [ "${rows}" -ge "${MIN_EVENT_ROWS}" ]; then
+    echo "done:${rows}:${out_file}"
+    return 0
+  fi
+
+  local alt
+  while IFS= read -r alt; do
+    [ -f "${alt}" ] || continue
+    rows="$(count_non_comment_lines "${alt}")"
+    if [ "${rows}" -ge "${MIN_EVENT_ROWS}" ]; then
+      echo "needs_fix:${rows}:${alt}"
+      return 0
+    fi
+  done < <(find "${DSEC_ROOT}/train/${seq}" -maxdepth 2 -type f -path '*/v2e_output_distorted_gray_clean*/dvs_events.txt' 2>/dev/null | sort)
+
+  echo "pending:0:${out_file}"
+}
+
 train_clean_done=0
 for seq in $(tr ',' ' ' <<< "${TRAIN_SIM_SEQUENCES},${VAL_SIM_SEQUENCES}"); do
-  if [ -f "${DSEC_ROOT}/train/${seq}/v2e_output_distorted_gray_clean/dvs_events.txt" ]; then
+  s="$(sequence_clean_status "${seq}")"
+  status="${s%%:*}"
+  if [ "${status}" = "done" ]; then
     train_clean_done=$((train_clean_done + 1))
   fi
 done
@@ -81,35 +124,33 @@ echo
 echo "== per-train/val clean v2e =="
 for seq in $(tr ',' ' ' <<< "${TRAIN_SIM_SEQUENCES}"); do
   out_dir="${DSEC_ROOT}/train/${seq}/v2e_output_distorted_gray_clean"
-  out_file="${out_dir}/dvs_events.txt"
-  if [ -f "${out_file}" ]; then
-    status="done"
-  else
-    status="pending"
-  fi
+  s="$(sequence_clean_status "${seq}")"
+  status="${s%%:*}"
+  rest="${s#*:}"
+  rows="${rest%%:*}"
+  selected_file="${rest#*:}"
   if [ -d "${out_dir}" ]; then
     files="$(find "${out_dir}" -maxdepth 1 -type f -printf "%f " | sed 's/[[:space:]]*$//')"
     files="${files:-<no files>}"
   else
     files="<missing dir>"
   fi
-  printf "%-24s %-8s %s\n" "${seq}" "${status}" "${files}"
+  printf "%-24s %-10s rows=%-8s selected=%s | %s\n" "${seq}" "${status}" "${rows}" "${selected_file}" "${files}"
 done
 for seq in $(tr ',' ' ' <<< "${VAL_SIM_SEQUENCES}"); do
   out_dir="${DSEC_ROOT}/train/${seq}/v2e_output_distorted_gray_clean"
-  out_file="${out_dir}/dvs_events.txt"
-  if [ -f "${out_file}" ]; then
-    status="done"
-  else
-    status="pending"
-  fi
+  s="$(sequence_clean_status "${seq}")"
+  status="${s%%:*}"
+  rest="${s#*:}"
+  rows="${rest%%:*}"
+  selected_file="${rest#*:}"
   if [ -d "${out_dir}" ]; then
     files="$(find "${out_dir}" -maxdepth 1 -type f -printf "%f " | sed 's/[[:space:]]*$//')"
     files="${files:-<no files>}"
   else
     files="<missing dir>"
   fi
-  printf "%-24s %-8s %s\n" "${seq}" "${status}" "${files}"
+  printf "%-24s %-10s rows=%-8s selected=%s | %s\n" "${seq}" "${status}" "${rows}" "${selected_file}" "${files}"
 done
 
 echo
