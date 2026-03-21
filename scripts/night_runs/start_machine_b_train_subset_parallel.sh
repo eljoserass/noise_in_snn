@@ -20,9 +20,21 @@ TORCH_PACKAGES="${TORCH_PACKAGES:-torch torchvision torchaudio}"
 DSEC_ROOT="${DSEC_ROOT:-/workspace/data/dsec}"
 TRAIN_SPLIT="${TRAIN_SPLIT:-train}"
 VAL_SPLIT="${VAL_SPLIT:-train}"
-TRAIN_SEQUENCES="${TRAIN_SEQUENCES:-thun_00_a,interlaken_00_c,interlaken_00_e,interlaken_00_g,zurich_city_00_b,zurich_city_02_c,zurich_city_05_b,zurich_city_10_b}"
+TRAIN_SEQUENCES="${TRAIN_SEQUENCES:-thun_00_a,interlaken_00_c,interlaken_00_e,interlaken_00_g,zurich_city_00_b,zurich_city_02_c,zurich_city_05_b,zurich_city_10_b,zurich_city_07_a,zurich_city_09_d,zurich_city_09_e,zurich_city_04_d}"
 VAL_SEQUENCES="${VAL_SEQUENCES:-zurich_city_16_a,zurich_city_17_a,zurich_city_18_a,zurich_city_19_a,zurich_city_20_a,zurich_city_21_a}"
 CLASS_IDS="${CLASS_IDS:-0,1,2,3,4,5,6,7}"
+ANN_IMAGE_RELPATH="${ANN_IMAGE_RELPATH:-images/left/distorted_gray}"
+SNN_IMAGE_RELPATH="${SNN_IMAGE_RELPATH:-images/left/distorted_gray}"
+ANN_CLASS_BALANCE="${ANN_CLASS_BALANCE:-1}"
+ANN_CLASS_BALANCE_BG_WEIGHT="${ANN_CLASS_BALANCE_BG_WEIGHT:-0.25}"
+ANN_CLASS_BALANCE_POWER="${ANN_CLASS_BALANCE_POWER:-0.5}"
+ANN_CLASS_BALANCE_MIN="${ANN_CLASS_BALANCE_MIN:-0.25}"
+ANN_CLASS_BALANCE_MAX="${ANN_CLASS_BALANCE_MAX:-8.0}"
+SNN_CLASS_BALANCE="${SNN_CLASS_BALANCE:-1}"
+SNN_CLASS_BALANCE_BG_WEIGHT="${SNN_CLASS_BALANCE_BG_WEIGHT:-0.25}"
+SNN_CLASS_BALANCE_POWER="${SNN_CLASS_BALANCE_POWER:-0.5}"
+SNN_CLASS_BALANCE_MIN="${SNN_CLASS_BALANCE_MIN:-0.25}"
+SNN_CLASS_BALANCE_MAX="${SNN_CLASS_BALANCE_MAX:-8.0}"
 
 ANN_GPU="${ANN_GPU:-0}"
 SNN_GPU="${SNN_GPU:-1}"
@@ -38,6 +50,7 @@ SIM_EVENT_RELPATH="${SIM_EVENT_RELPATH:-v2e_output_distorted_gray_clean/dvs_even
 SIM_FPS="${SIM_FPS:-20}"
 SNN_SEQUENCE_LENGTH="${SNN_SEQUENCE_LENGTH:-8}"
 SNN_SEQUENCE_STRIDE="${SNN_SEQUENCE_STRIDE:-8}"
+SNN_TIMESTEPS_PER_FRAME="${SNN_TIMESTEPS_PER_FRAME:-5}"
 CHECK_SIM_EVENTS="${CHECK_SIM_EVENTS:-1}"
 MIN_EVENT_BYTES="${MIN_EVENT_BYTES:-32}"
 MIN_EVENT_LINES="${MIN_EVENT_LINES:-1}"
@@ -73,7 +86,14 @@ count_non_comment_lines() {
     echo 0
     return 0
   fi
-  awk '!/^[[:space:]]*#/{c++} END{print c+0}' "${f}" 2>/dev/null || echo 0
+  local out
+  out="$(awk '!/^[[:space:]]*#/{c++} END{print c+0}' "${f}" 2>/dev/null || true)"
+  out="$(printf '%s\n' "${out}" | tail -n 1)"
+  if [[ "${out}" =~ ^[0-9]+$ ]]; then
+    echo "${out}"
+  else
+    echo 0
+  fi
 }
 
 if [ "${RUN_ANN}" != "1" ] && [ "${RUN_SNN}" != "1" ]; then
@@ -129,6 +149,19 @@ print(f"[setup] cuda_device_count={torch.cuda.device_count()}")
 if require_cuda and not torch.cuda.is_available():
     raise SystemExit("[setup] ERROR: CUDA required but not available.")
 PY
+
+{
+  echo "[cfg] dsec_root=${DSEC_ROOT}"
+  echo "[cfg] train_split=${TRAIN_SPLIT} val_split=${VAL_SPLIT}"
+  echo "[cfg] ann_image_relpath=${ANN_IMAGE_RELPATH}"
+  echo "[cfg] snn_image_relpath=${SNN_IMAGE_RELPATH}"
+  echo "[cfg] ann_class_balance=${ANN_CLASS_BALANCE}"
+  echo "[cfg] snn_class_balance=${SNN_CLASS_BALANCE}"
+  echo "[cfg] sim_event_relpath=${SIM_EVENT_RELPATH}"
+  echo "[cfg] snn_timesteps_per_frame=${SNN_TIMESTEPS_PER_FRAME}"
+  echo "[cfg] train_sequences=${TRAIN_SEQUENCES}"
+  echo "[cfg] val_sequences=${VAL_SEQUENCES}"
+} | tee -a "${ENV_LOG_FILE}"
 
 mkdir -p "${ANN_SAVE_DIR}" "${SNN_SAVE_DIR}"
 
@@ -194,6 +227,7 @@ ann_cmd=(
   --val-split "${VAL_SPLIT}"
   --train-sequences "${TRAIN_SEQUENCES}"
   --val-sequences "${VAL_SEQUENCES}"
+  --image-relpath "${ANN_IMAGE_RELPATH}"
   --class-ids "${CLASS_IDS}"
   --epochs "${ANN_EPOCHS}"
   --batch-size "${ANN_BATCH_SIZE}"
@@ -204,6 +238,16 @@ ann_cmd=(
   --device cuda
 )
 
+if [ "${ANN_CLASS_BALANCE}" = "1" ]; then
+  ann_cmd+=(
+    --class-balance
+    --class-balance-bg-weight "${ANN_CLASS_BALANCE_BG_WEIGHT}"
+    --class-balance-power "${ANN_CLASS_BALANCE_POWER}"
+    --class-balance-min "${ANN_CLASS_BALANCE_MIN}"
+    --class-balance-max "${ANN_CLASS_BALANCE_MAX}"
+  )
+fi
+
 snn_cmd=(
   python scripts/train_snn_dsec.py
   --dsec-root "${DSEC_ROOT}"
@@ -211,12 +255,14 @@ snn_cmd=(
   --val-split "${VAL_SPLIT}"
   --train-sequences "${TRAIN_SEQUENCES}"
   --val-sequences "${VAL_SEQUENCES}"
+  --image-relpath "${SNN_IMAGE_RELPATH}"
   --class-ids "${CLASS_IDS}"
   --event-source simulated
   --event-relpath "${SIM_EVENT_RELPATH}"
   --simulated-fps "${SIM_FPS}"
   --sequence-length "${SNN_SEQUENCE_LENGTH}"
   --sequence-stride "${SNN_SEQUENCE_STRIDE}"
+  --timesteps-per-frame "${SNN_TIMESTEPS_PER_FRAME}"
   --epochs "${SNN_EPOCHS}"
   --batch-size "${SNN_BATCH_SIZE}"
   --num-workers "${NUM_WORKERS}"
@@ -225,6 +271,16 @@ snn_cmd=(
   --save-dir "${SNN_SAVE_DIR}"
   --device cuda
 )
+
+if [ "${SNN_CLASS_BALANCE}" = "1" ]; then
+  snn_cmd+=(
+    --class-balance
+    --class-balance-bg-weight "${SNN_CLASS_BALANCE_BG_WEIGHT}"
+    --class-balance-power "${SNN_CLASS_BALANCE_POWER}"
+    --class-balance-min "${SNN_CLASS_BALANCE_MIN}"
+    --class-balance-max "${SNN_CLASS_BALANCE_MAX}"
+  )
+fi
 
 if [ "${AUTO_RESUME}" = "1" ]; then
   ann_ckpt="${ANN_SAVE_DIR}/vgg11_ssd_ann_dsec_best.pth"

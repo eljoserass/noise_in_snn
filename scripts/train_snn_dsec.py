@@ -1,8 +1,9 @@
 """
 Train VGG11-SSD SNN on DSEC event data.
 
-Important: this training path does NOT repeat each frame for extra timesteps.
-Temporal integration is only through membrane state across chronological frames.
+Temporal integration is performed by membrane state across chronological frames.
+Optionally, each frame can be repeated for multiple timesteps to increase
+membrane accumulation before computing gradients.
 """
 
 import argparse
@@ -11,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -87,6 +89,45 @@ def _maybe_resize(frame: torch.Tensor, height: int, width: int) -> torch.Tensor:
     return F.interpolate(frame, size=(height, width), mode="bilinear", align_corners=False)
 
 
+def estimate_class_weights_from_dataset(
+    dataset: DSECSSD_SNN,
+    num_classes: int,
+    bg_weight: float = 0.25,
+    power: float = 0.5,
+    min_weight: float = 0.25,
+    max_weight: float = 8.0,
+) -> torch.Tensor:
+    """
+    Estimate class weights from frame-aligned labels without loading event frames.
+    Class index 0 is background.
+    """
+    counts = np.zeros((num_classes,), dtype=np.float64)
+    for seq in dataset.sequences:
+        for start, end in seq.frame_track_ranges:
+            if end <= start:
+                continue
+            cls_ids = seq.tracks["class_id"][start:end].astype(np.int64)
+            for cid in cls_ids:
+                label = dataset.class_id_to_label.get(int(cid), 0)
+                counts[label] += 1.0
+
+    weights = np.ones((num_classes,), dtype=np.float32)
+    weights[0] = float(bg_weight)
+    pos = counts[1:]
+    nz = pos[pos > 0]
+    if nz.size == 0:
+        return torch.from_numpy(weights)
+
+    ref = float(np.median(nz))
+    for cls in range(1, num_classes):
+        c = max(float(counts[cls]), 1.0)
+        w = (ref / c) ** float(power)
+        w = max(float(min_weight), min(float(max_weight), float(w)))
+        weights[cls] = float(w)
+
+    return torch.from_numpy(weights)
+
+
 def train_one_epoch(
     model: VGG11_SSD_SNN,
     dataloader: DataLoader,
@@ -97,6 +138,7 @@ def train_one_epoch(
     anchors: torch.Tensor,
     input_height: int,
     input_width: int,
+    timesteps_per_frame: int,
 ) -> Tuple[float, float, float]:
     model.train()
     total_loss = 0.0
@@ -129,15 +171,25 @@ def train_one_epoch(
                 cls_target = cls_target.unsqueeze(0)
                 loc_target = loc_target.unsqueeze(0)
 
-                cls_preds, loc_preds = model(frame)
-                loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
+                frame_loss_val = 0.0
+                frame_cls_val = 0.0
+                frame_loc_val = 0.0
+                frame_loss = None
+                for t in range(timesteps_per_frame):
+                    cls_preds, loc_preds = model(frame)
+                    loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
+                    frame_loss_val += loss.item()
+                    frame_cls_val += cls_loss.item()
+                    frame_loc_val += loc_loss.item()
+                    if t == timesteps_per_frame - 1:
+                        frame_loss = loss
 
                 scale = 1.0 / float(num_frames * num_sequences)
-                (loss * scale).backward()
+                (frame_loss * scale).backward()
 
-                batch_loss_val += loss.item() * scale
-                batch_cls_val += cls_loss.item() * scale
-                batch_loc_val += loc_loss.item() * scale
+                batch_loss_val += (frame_loss_val / float(timesteps_per_frame)) * scale
+                batch_cls_val += (frame_cls_val / float(timesteps_per_frame)) * scale
+                batch_loc_val += (frame_loc_val / float(timesteps_per_frame)) * scale
 
                 model.detach_states()
 
@@ -168,6 +220,7 @@ def validate(
     anchors: torch.Tensor,
     input_height: int,
     input_width: int,
+    timesteps_per_frame: int,
 ) -> Tuple[float, float, float]:
     model.eval()
     total_loss = 0.0
@@ -197,13 +250,20 @@ def validate(
                 cls_target = cls_target.unsqueeze(0)
                 loc_target = loc_target.unsqueeze(0)
 
-                cls_preds, loc_preds = model(frame)
-                loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
+                frame_loss_val = 0.0
+                frame_cls_val = 0.0
+                frame_loc_val = 0.0
+                for _ in range(timesteps_per_frame):
+                    cls_preds, loc_preds = model(frame)
+                    loss, (cls_loss, loc_loss) = criterion(cls_preds, loc_preds, cls_target, loc_target)
+                    frame_loss_val += loss.item()
+                    frame_cls_val += cls_loss.item()
+                    frame_loc_val += loc_loss.item()
 
                 scale = 1.0 / float(num_frames * num_sequences)
-                batch_loss_val += loss.item() * scale
-                batch_cls_val += cls_loss.item() * scale
-                batch_loc_val += loc_loss.item() * scale
+                batch_loss_val += (frame_loss_val / float(timesteps_per_frame)) * scale
+                batch_cls_val += (frame_cls_val / float(timesteps_per_frame)) * scale
+                batch_loc_val += (frame_loc_val / float(timesteps_per_frame)) * scale
 
         total_loss += batch_loss_val
         total_cls_loss += batch_cls_val
@@ -263,6 +323,17 @@ def parse_args():
     parser.add_argument("--beta", type=float, default=0.9)
     parser.add_argument("--threshold", type=float, default=1.0)
     parser.add_argument("--surrogate-slope", type=float, default=25.0)
+    parser.add_argument(
+        "--timesteps-per-frame",
+        type=int,
+        default=5,
+        help="Repeat each frame for T forward passes before backward/validation accumulation.",
+    )
+    parser.add_argument("--class-balance", action="store_true", help="Enable class-weighted classification loss.")
+    parser.add_argument("--class-balance-bg-weight", type=float, default=0.25)
+    parser.add_argument("--class-balance-power", type=float, default=0.5)
+    parser.add_argument("--class-balance-min", type=float, default=0.25)
+    parser.add_argument("--class-balance-max", type=float, default=8.0)
 
     # Runtime
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -281,6 +352,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.timesteps_per_frame <= 0:
+        raise ValueError("--timesteps-per-frame must be > 0")
     resolve_val_split(args)
     os.makedirs(args.save_dir, exist_ok=True)
     device = torch.device(args.device)
@@ -290,7 +363,10 @@ def main():
 
     print(f"Using device: {device}")
     print(f"DSEC classes: {class_ids} (num_classes={num_classes})")
-    print("SNN temporal mode: one forward pass per frame (no repeated timestep accumulation)")
+    print(
+        f"SNN temporal mode: {args.timesteps_per_frame} forward pass(es) per frame "
+        "(membrane state also carries across chronological frames)"
+    )
 
     wandb_run = None
     if args.wandb:
@@ -372,6 +448,23 @@ def main():
 
     from snntorch import surrogate
 
+    class_weights = None
+    if args.class_balance:
+        class_weights = estimate_class_weights_from_dataset(
+            train_dataset,
+            num_classes=num_classes + 1,
+            bg_weight=args.class_balance_bg_weight,
+            power=args.class_balance_power,
+            min_weight=args.class_balance_min,
+            max_weight=args.class_balance_max,
+        )
+        class_weight_msg = ", ".join(
+            f"{idx}:{class_weights[idx]:.3f}" for idx in range(class_weights.numel())
+        )
+        print(f"[train_snn_dsec] class weights (incl bg=0): {class_weight_msg}")
+        if args.wandb and wandb_run:
+            wandb.log({f"class_weight/{idx}": float(w) for idx, w in enumerate(class_weights.tolist())})
+
     model = VGG11_SSD_SNN(
         num_classes=num_classes + 1,
         beta=args.beta,
@@ -379,7 +472,10 @@ def main():
         spike_grad=surrogate.fast_sigmoid(slope=args.surrogate_slope),
     ).to(device)
     anchors = generate_anchors_for_model(model, (2, args.input_height, args.input_width), device)
-    criterion = SSDLoss(num_classes=num_classes + 1)
+    criterion = SSDLoss(
+        num_classes=num_classes + 1,
+        class_weights=class_weights.to(device) if class_weights is not None else None,
+    )
     optimizer = optim.SGD(
         model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay
     )
@@ -414,9 +510,17 @@ def main():
             anchors,
             args.input_height,
             args.input_width,
+            args.timesteps_per_frame,
         )
         val_loss, val_cls_loss, val_loc_loss = validate(
-            model, val_loader, criterion, device, anchors, args.input_height, args.input_width
+            model,
+            val_loader,
+            criterion,
+            device,
+            anchors,
+            args.input_height,
+            args.input_width,
+            args.timesteps_per_frame,
         )
         scheduler.step()
         lr = optimizer.param_groups[0]["lr"]
