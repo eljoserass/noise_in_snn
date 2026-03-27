@@ -29,6 +29,12 @@ def parse_list(value: str) -> list[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def normalize_wandb_env() -> None:
+    # Allow a common typo used in some launch scripts/environments.
+    if not os.getenv("WANDB_API_KEY") and os.getenv("WANBD_API_KEY"):
+        os.environ["WANDB_API_KEY"] = os.environ["WANBD_API_KEY"]
+
+
 class DetectionEvaluator:
     def __init__(self, num_classes, iou_thresholds=None, class_names=None):
         self.num_classes = num_classes
@@ -479,6 +485,7 @@ def to_serializable(obj):
 
 
 def main():
+    normalize_wandb_env()
     args = parse_args()
     if args.timesteps_per_frame <= 0:
         raise ValueError("--timesteps-per-frame must be > 0")
@@ -556,6 +563,8 @@ def main():
                 wandb.finish()
             except ImportError:
                 print("wandb not installed; skipping wandb logging")
+            except Exception as e:
+                print(f"wandb logging failed; continuing without wandb: {e}")
 
     print("\n=== summary ===")
     for split, results in all_results.items():

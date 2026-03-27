@@ -142,6 +142,9 @@ def run_v2e(
     overwrite: bool,
     dvs_mode: str | None,
     exposure_duration_s: float,
+    events_format: str,
+    events_h5_name: str,
+    events_txt_name: str,
     manual_args: list[str] | None = None,
 ) -> Path:
     cmd = [
@@ -161,13 +164,15 @@ def run_v2e(
         "--dvs_exposure",
         "duration",
         str(exposure_duration_s),
-        "--dvs_text",
-        "dvs_events.txt",
         "--unique_output_folder",
         "False",
         "--skip_video_output",
         "--no_preview",
     ]
+    if events_format in ("h5", "both"):
+        cmd += ["--dvs_h5", events_h5_name]
+    if events_format in ("text", "both"):
+        cmd += ["--dvs_text", events_txt_name]
     if overwrite:
         cmd.append("--overwrite")
 
@@ -185,20 +190,31 @@ def run_v2e(
         print(res.stderr[-2000:])
         raise RuntimeError(f"v2e failed for input: {input_dir}")
 
-    events_file = output_dir / "dvs_events.txt"
-    if not events_file.exists():
+    expected: list[Path] = []
+    if events_format in ("h5", "both"):
+        expected.append(output_dir / events_h5_name)
+    if events_format in ("text", "both"):
+        expected.append(output_dir / events_txt_name)
+
+    existing = [p for p in expected if p.exists()]
+    if existing:
+        return existing[0]
+
+    if not existing:
         # Some v2e builds can still materialize into suffixed folders if output_dir is non-empty.
         parent = output_dir.parent
         stem = output_dir.name
-        candidates = sorted(
-            [
-                p / "dvs_events.txt"
-                for p in parent.glob(f"{stem}*")
-                if p.is_dir() and (p / "dvs_events.txt").exists()
-            ],
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
+        candidates: list[Path] = []
+        for out in parent.glob(f"{stem}*"):
+            if not out.is_dir():
+                continue
+            for p in (
+                out / events_h5_name,
+                out / events_txt_name,
+            ):
+                if p.exists():
+                    candidates.append(p)
+        candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
         if candidates:
             resolved = candidates[0]
             print(f"[v2e] output resolved from sibling folder: {resolved}")
@@ -207,8 +223,8 @@ def run_v2e(
         print(res.stdout[-2000:])
         print("--- v2e stderr tail ---")
         print(res.stderr[-2000:])
-        raise RuntimeError(f"v2e output missing: {events_file}")
-    return events_file
+        raise RuntimeError(f"v2e output missing in: {output_dir}")
+    return existing[0]
 
 
 def manual_v2e_args(noise_type: str, severity: int) -> list[str]:
@@ -366,6 +382,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Pass --overwrite to v2e runs.",
     )
+    p.add_argument(
+        "--v2e-events-format",
+        type=str,
+        default="h5",
+        choices=["h5", "text", "both"],
+        help="Which v2e event file format to write.",
+    )
+    p.add_argument(
+        "--v2e-events-h5-name",
+        type=str,
+        default="dvs_events.h5",
+        help="Output H5 event filename used when --v2e-events-format includes h5.",
+    )
+    p.add_argument(
+        "--v2e-events-txt-name",
+        type=str,
+        default="dvs_events.txt",
+        help="Output text event filename used when --v2e-events-format includes text.",
+    )
     return p
 
 
@@ -392,6 +427,10 @@ def main() -> None:
     print(f"[cfg] source frames: {source_dir}")
     print(f"[cfg] grayscale out: {grayscale_dir}")
     print(f"[cfg] severities: {severities}")
+    print(
+        f"[cfg] v2e events format: {args.v2e_events_format} "
+        f"(h5={args.v2e_events_h5_name}, txt={args.v2e_events_txt_name})"
+    )
 
     maybe_validate_rectification(
         sequence_dir=seq_dir,
@@ -448,10 +487,14 @@ def main() -> None:
     for mode in built_in_modes:
         for inp in base_inputs:
             out_dir = seq_dir / f"v2e_output_{inp.name}_{mode}"
-            events_txt = out_dir / "dvs_events.txt"
-            if skip_existing and events_txt.exists():
-                print(f"[v2e-skip] {events_txt}")
-                event_files.append(events_txt)
+            preferred = (
+                out_dir / args.v2e_events_h5_name
+                if args.v2e_events_format in ("h5", "both")
+                else out_dir / args.v2e_events_txt_name
+            )
+            if skip_existing and preferred.exists():
+                print(f"[v2e-skip] {preferred}")
+                event_files.append(preferred)
                 continue
             event_files.append(
                 run_v2e(
@@ -465,6 +508,9 @@ def main() -> None:
                     overwrite=args.overwrite_v2e,
                     dvs_mode=mode,
                     exposure_duration_s=args.v2e_exposure_duration,
+                    events_format=args.v2e_events_format,
+                    events_h5_name=args.v2e_events_h5_name,
+                    events_txt_name=args.v2e_events_txt_name,
                     manual_args=None,
                 )
             )
@@ -479,10 +525,14 @@ def main() -> None:
         for sev in severities:
             manual_args = manual_v2e_args(noise_type, sev)
             out_dir = seq_dir / f"v2e_output_{grayscale_dir.name}_{noise_type}_s{sev}"
-            events_txt = out_dir / "dvs_events.txt"
-            if skip_existing and events_txt.exists():
-                print(f"[v2e-skip] {events_txt}")
-                event_files.append(events_txt)
+            preferred = (
+                out_dir / args.v2e_events_h5_name
+                if args.v2e_events_format in ("h5", "both")
+                else out_dir / args.v2e_events_txt_name
+            )
+            if skip_existing and preferred.exists():
+                print(f"[v2e-skip] {preferred}")
+                event_files.append(preferred)
                 continue
             event_files.append(
                 run_v2e(
@@ -496,6 +546,9 @@ def main() -> None:
                     overwrite=args.overwrite_v2e,
                     dvs_mode=None,
                     exposure_duration_s=args.v2e_exposure_duration,
+                    events_format=args.v2e_events_format,
+                    events_h5_name=args.v2e_events_h5_name,
+                    events_txt_name=args.v2e_events_txt_name,
                     manual_args=manual_args,
                 )
             )

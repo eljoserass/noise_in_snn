@@ -517,9 +517,12 @@ class _H5EventStore:
         self._events_x = None
         self._events_y = None
         self._events_p = None
+        self._events_nx4 = None
+        self._events_struct = None
         self._ms_to_idx = None
         self._t_offset = 0
         self._num_events = 0
+        self._time_scale = 1.0
 
     def __getstate__(self) -> dict[str, Any]:
         # Avoid pickling open HDF5 handles when DataLoader forks workers.
@@ -529,6 +532,8 @@ class _H5EventStore:
         state["_events_x"] = None
         state["_events_y"] = None
         state["_events_p"] = None
+        state["_events_nx4"] = None
+        state["_events_struct"] = None
         state["_ms_to_idx"] = None
         return state
 
@@ -541,18 +546,63 @@ class _H5EventStore:
         import hdf5plugin  # noqa: F401
 
         self._file = h5py.File(self.h5_path, "r")
-        self._events_t = self._file["events"]["t"]
-        self._events_x = self._file["events"]["x"]
-        self._events_y = self._file["events"]["y"]
-        self._events_p = self._file["events"]["p"]
-        self._ms_to_idx = self._file["ms_to_idx"]
-        self._t_offset = int(self._file["t_offset"][()])
-        self._num_events = int(self._events_t.shape[0])
+        events_node = self._file["events"]
+
+        # DSEC native layout: /events/{t,x,y,p} + /ms_to_idx + /t_offset
+        if isinstance(events_node, h5py.Group):
+            self._events_t = events_node["t"]
+            self._events_x = events_node["x"]
+            self._events_y = events_node["y"]
+            self._events_p = events_node["p"]
+            self._events_nx4 = None
+            self._events_struct = None
+            self._ms_to_idx = self._file["ms_to_idx"]
+            self._t_offset = int(self._file["t_offset"][()])
+            self._num_events = int(self._events_t.shape[0])
+            self._time_scale = 1.0
+            return
+
+        # v2e H5 layout: /events is an Nx4 dataset [t, x, y, p]
+        if isinstance(events_node, h5py.Dataset) and events_node.ndim == 2 and events_node.shape[1] >= 4:
+            self._events_nx4 = events_node
+            self._events_struct = None
+            self._events_t = None
+            self._events_x = None
+            self._events_y = None
+            self._events_p = None
+            # v2e times are usually integer microseconds; if float, interpret as seconds.
+            self._time_scale = 1_000_000.0 if np.issubdtype(events_node.dtype, np.floating) else 1.0
+            self._t_offset = 0
+            self._num_events = int(events_node.shape[0])
+            self._ms_to_idx = None
+            return
+
+        # v2e variant: /events is a compound dataset with named fields
+        if isinstance(events_node, h5py.Dataset) and events_node.dtype.names:
+            names = set(events_node.dtype.names)
+            if {"t", "x", "y", "p"}.issubset(names):
+                self._events_struct = events_node
+                self._events_nx4 = None
+                self._events_t = None
+                self._events_x = None
+                self._events_y = None
+                self._events_p = None
+                self._t_offset = 0
+                self._num_events = int(events_node.shape[0])
+                self._time_scale = (
+                    1_000_000.0 if np.issubdtype(events_node.dtype["t"], np.floating) else 1.0
+                )
+                self._ms_to_idx = None
+                return
+
+        raise ValueError(f"Unsupported H5 event layout at {self.h5_path}")
 
     def close(self) -> None:
         if self._file is not None:
             self._file.close()
             self._file = None
+            self._events_nx4 = None
+            self._events_struct = None
 
     def __del__(self):
         try:
@@ -572,37 +622,43 @@ class _H5EventStore:
         local_start = max(0, int(t_start_us) - self._t_offset)
         local_end = max(local_start, int(t_end_us) - self._t_offset)
 
-        ms_start = local_start // 1000
-        ms_end = local_end // 1000
+        if self._ms_to_idx is not None:
+            ms_start = local_start // 1000
+            ms_end = local_end // 1000
 
-        if ms_start >= len(self._ms_to_idx):
-            return (
-                np.zeros((0,), dtype=np.int64),
-                np.zeros((0,), dtype=np.int64),
-                np.zeros((0,), dtype=np.uint8),
-            )
+            if ms_start >= len(self._ms_to_idx):
+                return (
+                    np.zeros((0,), dtype=np.int64),
+                    np.zeros((0,), dtype=np.int64),
+                    np.zeros((0,), dtype=np.uint8),
+                )
 
-        idx_lo = int(self._ms_to_idx[ms_start])
-        if ms_end + 1 < len(self._ms_to_idx):
-            idx_hi = int(self._ms_to_idx[ms_end + 1])
+            idx_lo = int(self._ms_to_idx[ms_start])
+            if ms_end + 1 < len(self._ms_to_idx):
+                idx_hi = int(self._ms_to_idx[ms_end + 1])
+            else:
+                idx_hi = self._num_events
+
+            idx_lo = max(0, min(idx_lo, self._num_events))
+            idx_hi = max(idx_lo, min(idx_hi, self._num_events))
+
+            if idx_hi <= idx_lo:
+                return (
+                    np.zeros((0,), dtype=np.int64),
+                    np.zeros((0,), dtype=np.int64),
+                    np.zeros((0,), dtype=np.uint8),
+                )
+
+            t_chunk = self._events_t[idx_lo:idx_hi]
+            rel_lo = int(np.searchsorted(t_chunk, local_start, side="left"))
+            rel_hi = int(np.searchsorted(t_chunk, local_end, side="left"))
+            start = idx_lo + rel_lo
+            end = idx_lo + rel_hi
         else:
-            idx_hi = self._num_events
+            # v2e datasets: avoid loading full timestamp columns into RAM.
+            start = self._searchsorted_events_t(local_start, side="left")
+            end = self._searchsorted_events_t(local_end, side="left")
 
-        idx_lo = max(0, min(idx_lo, self._num_events))
-        idx_hi = max(idx_lo, min(idx_hi, self._num_events))
-
-        if idx_hi <= idx_lo:
-            return (
-                np.zeros((0,), dtype=np.int64),
-                np.zeros((0,), dtype=np.int64),
-                np.zeros((0,), dtype=np.uint8),
-            )
-
-        t_chunk = self._events_t[idx_lo:idx_hi]
-        rel_lo = int(np.searchsorted(t_chunk, local_start, side="left"))
-        rel_hi = int(np.searchsorted(t_chunk, local_end, side="left"))
-        start = idx_lo + rel_lo
-        end = idx_lo + rel_hi
         if end <= start:
             return (
                 np.zeros((0,), dtype=np.int64),
@@ -610,10 +666,48 @@ class _H5EventStore:
                 np.zeros((0,), dtype=np.uint8),
             )
 
+        if self._events_nx4 is not None:
+            event_block = self._events_nx4[start:end]
+            x = event_block[:, 1].astype(np.int64, copy=False)
+            y = event_block[:, 2].astype(np.int64, copy=False)
+            p = event_block[:, 3].astype(np.uint8, copy=False)
+            return x, y, p
+
+        if self._events_struct is not None:
+            block = self._events_struct[start:end]
+            x = block["x"].astype(np.int64, copy=False)
+            y = block["y"].astype(np.int64, copy=False)
+            p = block["p"].astype(np.uint8, copy=False)
+            return x, y, p
+
         x = self._events_x[start:end].astype(np.int64, copy=False)
         y = self._events_y[start:end].astype(np.int64, copy=False)
         p = self._events_p[start:end].astype(np.uint8, copy=False)
         return x, y, p
+
+    def _event_time_at(self, idx: int) -> int:
+        if self._events_nx4 is not None:
+            t_val = self._events_nx4[idx, 0]
+        elif self._events_struct is not None:
+            t_val = self._events_struct[idx]["t"]
+        else:
+            t_val = self._events_t[idx]
+        if self._time_scale != 1.0:
+            return int(round(float(t_val) * self._time_scale))
+        return int(t_val)
+
+    def _searchsorted_events_t(self, target_us: int, side: str = "left") -> int:
+        lo = 0
+        hi = self._num_events
+        target = int(target_us)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            t_mid = self._event_time_at(mid)
+            if t_mid < target or (side == "right" and t_mid == target):
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
 
 
 class _TextEventStore:
@@ -672,27 +766,41 @@ def _resolve_event_file(sequence_dir: Path, event_source: str, event_relpath: st
     sim_candidates = [
         sequence_dir / event_relpath,
         sequence_dir / "v2e_output_distorted_gray_clean/dvs_events.txt",
+        sequence_dir / "v2e_output_distorted_gray_clean/dvs_events.h5",
         sequence_dir / "v2e_output/dvs_events.txt",
+        sequence_dir / "v2e_output/dvs_events.h5",
     ]
     for cand in sim_candidates:
-        if cand.exists() and cand.suffix.lower() == ".txt":
+        if cand.exists() and cand.suffix.lower() in {".txt", ".h5"}:
             return cand
 
     raise FileNotFoundError(
         f"No event file found for sequence {sequence_dir.name}. "
-        f"Tried real (events.h5) and simulated (dvs_events.txt) candidates."
+        f"Tried real (events.h5) and simulated (dvs_events.txt / dvs_events.h5) candidates."
     )
 
 
 def _event_timestamps_for_frames(
     frame_timestamps_us: np.ndarray,
     source_path: Path,
+    event_source: str,
     simulated_fps: float,
 ) -> np.ndarray:
     if source_path.suffix.lower() == ".txt":
         # v2e text events use relative timestamps (seconds from 0).
         frame_dt_us = int(round(1_000_000.0 / simulated_fps))
         return np.arange(frame_timestamps_us.shape[0], dtype=np.int64) * frame_dt_us
+
+    source_path_str = str(source_path).lower()
+    is_simulated_h5 = source_path.suffix.lower() == ".h5" and (
+        event_source == "simulated"
+        or "v2e_output" in source_path_str
+        or source_path.name.lower().startswith("dvs_events")
+    )
+    if is_simulated_h5 and frame_timestamps_us.size > 0:
+        # v2e H5 timestamps are relative to sequence start.
+        base_ts = int(frame_timestamps_us[0])
+        return frame_timestamps_us.astype(np.int64, copy=False) - base_ts
     return frame_timestamps_us
 
 
@@ -790,6 +898,7 @@ class DSECSSD_SNN(Dataset):
                 event_frame_ts = _event_timestamps_for_frames(
                     frame_timestamps_us=base_meta.frame_timestamps_us,
                     source_path=event_path,
+                    event_source=self.event_source,
                     simulated_fps=self.simulated_fps,
                 )
             except Exception as exc:

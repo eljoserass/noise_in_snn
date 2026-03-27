@@ -21,6 +21,8 @@ JOBS="${JOBS:-4}"
 V2E_SCRIPT="${V2E_SCRIPT:-tools/v2e/v2e.py}"
 INPUT_FPS="${INPUT_FPS:-20}"
 V2E_EXPOSURE_DURATION="${V2E_EXPOSURE_DURATION:-0.005}"
+V2E_EVENTS_FORMAT="${V2E_EVENTS_FORMAT:-h5}"   # h5 | text | both
+OVERWRITE_V2E="${OVERWRITE_V2E:-1}"
 
 # Optional env bootstrap for machine C style runs.
 BOOTSTRAP_ENV="${BOOTSTRAP_ENV:-1}"
@@ -166,14 +168,32 @@ prune_invalid_events_for_sequence() {
   [ -d "${seq_root}" ] || return 0
 
   local removed=0
+  local min_event_bytes="${MIN_EVENT_BYTES:-32}"
   while IFS= read -r evf; do
     [ -f "${evf}" ] || continue
-    rows="$(count_non_comment_lines "${evf}")"
-    if [ "${rows}" -lt "${MIN_EVENT_ROWS}" ]; then
-      rm -f "${evf}"
-      removed=$((removed + 1))
-    fi
-  done < <(find "${seq_root}" -type f -path '*/v2e_output*/dvs_events.txt' 2>/dev/null)
+    case "${evf}" in
+      *.txt)
+        rows="$(count_non_comment_lines "${evf}")"
+        if [ "${rows}" -lt "${MIN_EVENT_ROWS}" ]; then
+          rm -f "${evf}"
+          removed=$((removed + 1))
+        fi
+        ;;
+      *.h5)
+        size="$(stat -c%s "${evf}" 2>/dev/null || echo 0)"
+        if [ "${size}" -lt "${min_event_bytes}" ]; then
+          rm -f "${evf}"
+          removed=$((removed + 1))
+        fi
+        ;;
+      *)
+        ;;
+    esac
+  done < <(
+    find "${seq_root}" -type f \
+      \( -path '*/v2e_output*/dvs_events.txt' -o -path '*/v2e_output*/dvs_events.h5' \) \
+      2>/dev/null
+  )
 
   if [ "${removed}" -gt 0 ]; then
     echo "[pre] seq=${seq} removed_invalid_event_files=${removed}" | tee -a "${RUN_LOG_DIR}/summary.log"
@@ -192,12 +212,14 @@ run_upload_once() {
   if [ "${UPLOAD_SCOPE}" = "events_only" ]; then
     if [ -n "${seq_name}" ]; then
       upload_globs=(
+        "${split_prefix}/${seq_name}/v2e_output*/dvs_events.h5"
         "${split_prefix}/${seq_name}/v2e_output*/dvs_events.txt"
         "${split_prefix}/${seq_name}/v2e_output*/v2e-args.txt"
         "${split_prefix}/${seq_name}/object_detections/left/tracks_rectified*.npy"
       )
     else
       upload_globs=(
+        "${split_prefix}/*/v2e_output*/dvs_events.h5"
         "${split_prefix}/*/v2e_output*/dvs_events.txt"
         "${split_prefix}/*/v2e_output*/v2e-args.txt"
         "${split_prefix}/*/object_detections/left/tracks_rectified*.npy"
@@ -206,6 +228,7 @@ run_upload_once() {
   else
     if [ -n "${seq_name}" ]; then
       upload_globs=(
+        "${split_prefix}/${seq_name}/v2e_output*/dvs_events.h5"
         "${split_prefix}/${seq_name}/v2e_output*/dvs_events.txt"
         "${split_prefix}/${seq_name}/v2e_output*/v2e-args.txt"
         "${split_prefix}/${seq_name}/images/left/distorted_gray/*.png"
@@ -215,6 +238,7 @@ run_upload_once() {
       )
     else
       upload_globs=(
+        "${split_prefix}/*/v2e_output*/dvs_events.h5"
         "${split_prefix}/*/v2e_output*/dvs_events.txt"
         "${split_prefix}/*/v2e_output*/v2e-args.txt"
         "${split_prefix}/*/images/left/distorted_gray/*.png"
@@ -428,6 +452,8 @@ RUN_SEQUENCES_CSV="$(join_by_comma "${selected_sequences[@]}")"
   echo "split=${SPLIT}"
   echo "jobs=${JOBS}"
   echo "v2e_script=${V2E_SCRIPT}"
+  echo "v2e_events_format=${V2E_EVENTS_FORMAT}"
+  echo "overwrite_v2e=${OVERWRITE_V2E}"
   echo "phases=${PHASES}"
   echo "sequences_total=${#all_sequences[@]}"
   echo "sequences_selected=${#selected_sequences[@]}"
@@ -452,40 +478,45 @@ RUN_SEQUENCES_CSV="$(join_by_comma "${selected_sequences[@]}")"
   echo "min_event_rows=${MIN_EVENT_ROWS}"
 } | tee -a "${RUN_LOG_DIR}/summary.log"
 
+overwrite_arg=""
+if [ "${OVERWRITE_V2E}" = "1" ]; then
+  overwrite_arg=" --overwrite-v2e"
+fi
+
 mapfile -t phase_list < <(parse_csv "${PHASES}")
 for phase in "${phase_list[@]}"; do
   case "${phase}" in
     clean)
       run_phase "${phase}" \
-        "--run-v2e --v2e-script ${V2E_SCRIPT} --v2e-modes clean --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+        "--run-v2e --v2e-script ${V2E_SCRIPT} --v2e-events-format ${V2E_EVENTS_FORMAT} --v2e-modes clean --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing${overwrite_arg}"
       ;;
     native_core)
       run_phase "${phase}" \
-        "--run-v2e --v2e-script ${V2E_SCRIPT} --v2e-modes none --manual-v2e-noises ${NATIVE_CORE_NOISES} --severity-levels ${SEVERITY_CORE} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+        "--run-v2e --v2e-script ${V2E_SCRIPT} --v2e-events-format ${V2E_EVENTS_FORMAT} --v2e-modes none --manual-v2e-noises ${NATIVE_CORE_NOISES} --severity-levels ${SEVERITY_CORE} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing${overwrite_arg}"
       ;;
     native_extra)
       run_phase "${phase}" \
-        "--run-v2e --v2e-script ${V2E_SCRIPT} --v2e-modes none --manual-v2e-noises ${NATIVE_EXTRA_NOISES} --severity-levels ${SEVERITY_CORE} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+        "--run-v2e --v2e-script ${V2E_SCRIPT} --v2e-events-format ${V2E_EVENTS_FORMAT} --v2e-modes none --manual-v2e-noises ${NATIVE_EXTRA_NOISES} --severity-levels ${SEVERITY_CORE} --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing${overwrite_arg}"
       ;;
     weather)
       run_phase "${phase}" \
-        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --corruption-subset weather --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-events-format ${V2E_EVENTS_FORMAT} --v2e-on-corruptions --corruption-subset weather --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing${overwrite_arg}"
       ;;
     blur)
       run_phase "${phase}" \
-        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --corruption-subset blur --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-events-format ${V2E_EVENTS_FORMAT} --v2e-on-corruptions --corruption-subset blur --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing${overwrite_arg}"
       ;;
     noise)
       run_phase "${phase}" \
-        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --corruption-subset noise --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-events-format ${V2E_EVENTS_FORMAT} --v2e-on-corruptions --corruption-subset noise --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing${overwrite_arg}"
       ;;
     digital)
       run_phase "${phase}" \
-        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --corruption-subset digital --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-events-format ${V2E_EVENTS_FORMAT} --v2e-on-corruptions --corruption-subset digital --severity-levels ${SEVERITY_CORE} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing${overwrite_arg}"
       ;;
     full_weather)
       run_phase "${phase}" \
-        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-on-corruptions --corruption-subset weather --severity-levels ${SEVERITY_FULL} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing"
+        "--run-imagecorruptions --run-v2e --v2e-script ${V2E_SCRIPT} --v2e-events-format ${V2E_EVENTS_FORMAT} --v2e-on-corruptions --corruption-subset weather --severity-levels ${SEVERITY_FULL} --v2e-modes clean,noisy --manual-v2e-noises none --input-frame-rate ${INPUT_FPS} --v2e-exposure-duration ${V2E_EXPOSURE_DURATION} --skip-existing${overwrite_arg}"
       ;;
     *)
       echo "ERROR: unknown phase '${phase}'"

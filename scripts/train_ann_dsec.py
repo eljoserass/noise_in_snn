@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Tuple
 
+import numpy as np
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -76,6 +77,45 @@ def resolve_val_split(args) -> None:
 def collate_fn(batch):
     images, targets = zip(*batch)
     return torch.stack(images, dim=0), list(targets)
+
+
+def estimate_class_weights_from_dataset(
+    dataset: DSECSSD_ANN,
+    num_classes: int,
+    bg_weight: float = 0.25,
+    power: float = 0.5,
+    min_weight: float = 0.25,
+    max_weight: float = 8.0,
+) -> torch.Tensor:
+    """
+    Estimate class weights from frame-aligned labels without loading images.
+    Class index 0 is background.
+    """
+    counts = np.zeros((num_classes,), dtype=np.float64)
+    for seq in dataset.sequences:
+        for start, end in seq.frame_track_ranges:
+            if end <= start:
+                continue
+            cls_ids = seq.tracks["class_id"][start:end].astype(np.int64)
+            for cid in cls_ids:
+                label = dataset.class_id_to_label.get(int(cid), 0)
+                counts[label] += 1.0
+
+    weights = np.ones((num_classes,), dtype=np.float32)
+    weights[0] = float(bg_weight)
+    pos = counts[1:]
+    nz = pos[pos > 0]
+    if nz.size == 0:
+        return torch.from_numpy(weights)
+
+    ref = float(np.median(nz))
+    for cls in range(1, num_classes):
+        c = max(float(counts[cls]), 1.0)
+        w = (ref / c) ** float(power)
+        w = max(float(min_weight), min(float(max_weight), float(w)))
+        weights[cls] = float(w)
+
+    return torch.from_numpy(weights)
 
 
 def train_one_epoch(
@@ -219,6 +259,11 @@ def parse_args():
     parser.add_argument("--input-height", type=int, default=480)
     parser.add_argument("--input-width", type=int, default=640)
     parser.add_argument("--imagenet-norm", action="store_true", help="Apply ImageNet normalization.")
+    parser.add_argument("--class-balance", action="store_true", help="Enable class-weighted classification loss.")
+    parser.add_argument("--class-balance-bg-weight", type=float, default=0.25)
+    parser.add_argument("--class-balance-power", type=float, default=0.5)
+    parser.add_argument("--class-balance-min", type=float, default=0.25)
+    parser.add_argument("--class-balance-max", type=float, default=8.0)
 
     # Runtime
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -327,9 +372,29 @@ def main():
         pin_memory=True,
     )
 
+    class_weights = None
+    if args.class_balance:
+        class_weights = estimate_class_weights_from_dataset(
+            train_dataset,
+            num_classes=num_classes + 1,
+            bg_weight=args.class_balance_bg_weight,
+            power=args.class_balance_power,
+            min_weight=args.class_balance_min,
+            max_weight=args.class_balance_max,
+        )
+        class_weight_msg = ", ".join(
+            f"{idx}:{class_weights[idx]:.3f}" for idx in range(class_weights.numel())
+        )
+        print(f"[train_ann_dsec] class weights (incl bg=0): {class_weight_msg}")
+        if args.wandb and wandb_run:
+            wandb.log({f"class_weight/{idx}": float(w) for idx, w in enumerate(class_weights.tolist())})
+
     model = VGG11_SSD_ANN(num_classes=num_classes + 1).to(device)
     anchors = generate_anchors_for_model(model, (3, args.input_height, args.input_width), device)
-    criterion = SSDLoss(num_classes=num_classes + 1)
+    criterion = SSDLoss(
+        num_classes=num_classes + 1,
+        class_weights=class_weights.to(device) if class_weights is not None else None,
+    )
     optimizer = optim.SGD(
         model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay
     )
