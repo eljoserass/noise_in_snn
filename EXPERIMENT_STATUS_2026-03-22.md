@@ -109,3 +109,15 @@
 - New orchestration script added for reproducible train->eval chain:
   - `scripts/night_runs/run_ann_subset8_balanced_then_eval14c.sh`
   - Includes host guard, venv auto-selection, isolated checkpoint/results folders, and forced W&B logging.
+
+## 12) SNN Simulated-Noise Snapshot Update (2026-03-28)
+- Snapshot package:
+  - `results/analysis/snn_sim_best14c_status_20260328/summary.md`
+  - `results/analysis/snn_sim_best14c_status_20260328/noise_map50_snapshot.csv`
+  - `results/analysis/snn_sim_best14c_status_20260328/map50_severity_curves_snapshot.png`
+- Coverage at snapshot time:
+  - completed: `28 / 41`
+  - pending: `13` (`impulse_noise_s2`, `impulse_noise_s4`, `motion_blur_s4`, all `fog_s1..s5`, all `frost_s1..s5`)
+- Observed behavior (interim):
+  - most `mAP@0.5` values are very low (`~1e-4` to `~2e-3`),
+  - two severity-5 outliers are currently high: `gaussian_noise_s5=0.010174`, `impulse_noise_s5=0.010090`.
