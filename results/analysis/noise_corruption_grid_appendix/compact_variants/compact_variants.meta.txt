@@ -1,0 +1,4 @@
+frame_idx=964
+score=(12, 13)
+rendering=red_blue_dark_background_snn_like_log1p_clip5
+variants=compact_variant_A_stacked_cell,compact_variant_B_interleaved_cols,compact_variant_C_native_strip
