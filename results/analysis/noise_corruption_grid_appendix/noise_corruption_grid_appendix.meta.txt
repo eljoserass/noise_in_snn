@@ -2,3 +2,4 @@ frame_idx=964
 frame_file=000964.png
 start_ts_us=48149942
 end_ts_us=48199939
+rendering=snn_like_log1p_clip5_dark_background
