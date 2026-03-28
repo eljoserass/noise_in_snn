@@ -1,0 +1,5 @@
+frame_idx=964
+score=(-1, -1)
+noise_types=gaussian_noise,snow,fog,frost
+excluded=shot_noise,impulse_noise,glass_blur,motion_blur,native_event_noise
+rendering=red_blue_dark_background_snn_like_log1p_clip5
