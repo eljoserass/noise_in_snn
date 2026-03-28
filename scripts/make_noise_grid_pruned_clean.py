@@ -163,8 +163,7 @@ def make_pruned_grid(seq_dir: Path, out_dir: Path, frame_idx: int) -> None:
         fig.text(0.0135, y, DISPLAY_NAMES.get(noise, noise), ha="left", va="center", fontsize=6.3, weight="bold")
 
     # Minimal, clean global tags for split cells.
-    fig.text(0.205, 0.982, "top: RGB", ha="left", va="top", fontsize=5.6)
-    fig.text(0.285, 0.982, "bottom: Events (sim)", ha="left", va="top", fontsize=5.6)
+    fig.text(0.995, 0.012, "top: RGB\nbottom: Events (sim)", ha="right", va="bottom", fontsize=5.4)
 
     fig.subplots_adjust(left=0.175, right=0.996, top=0.952, bottom=0.02)
     out_base = out_dir / "compact_variant_D_pruned_no_native_clean_tags"
