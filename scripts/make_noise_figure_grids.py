@@ -102,10 +102,9 @@ def event_rgb_from_window(
         pos = np.clip(pos, 0.0, count_clip_value) / count_clip_value
         neg = np.clip(neg, 0.0, count_clip_value) / count_clip_value
 
-    # Dark-off palette: background black, pos yellow, neg blue.
+    # Dark-off palette: background black, pos red, neg blue.
     rgb = np.zeros((h, w, 3), dtype=np.float32)
     rgb[..., 0] = pos
-    rgb[..., 1] = 0.85 * pos
     rgb[..., 2] = neg
     return np.clip(rgb, 0.0, 1.0)
 
@@ -214,14 +213,9 @@ def make_appendix(seq_dir: Path, out_dir: Path, frame_idx: int) -> None:
     for i, (noise, sev) in enumerate(NATIVE_ROWS):
         bb = axs[native_start + i, 2].get_position()
         y = 0.5 * (bb.y0 + bb.y1)
-        fig.text(0.118, y, f'{noise} (s{sev})', ha='right', va='center', fontsize=5.8)
+        fig.text(0.028, y, f'{noise} (s{sev})', ha='left', va='center', fontsize=5.8)
 
-    caption = (
-        'Visualisation of RGB corruptions and corresponding simulated event representations across severity levels. '
-        'Bottom rows show native event-domain noise variants generated directly via v2e parameter variation.'
-    )
-    fig.text(0.5, 0.006, caption, ha='center', va='bottom', fontsize=6.0)
-    fig.subplots_adjust(left=0.16, right=0.995, top=0.985, bottom=0.03)
+    fig.subplots_adjust(left=0.16, right=0.995, top=0.985, bottom=0.015)
 
     png_path = out_dir / 'noise_corruption_grid_appendix.png'
     pdf_path = out_dir / 'noise_corruption_grid_appendix.pdf'
